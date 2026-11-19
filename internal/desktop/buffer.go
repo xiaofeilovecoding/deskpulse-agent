@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	"math"
 	"syscall"
 	"unsafe"
 )
@@ -18,6 +19,7 @@ type windowBuffer struct {
 	pix           []byte
 	w, h          int32
 	dpi           uint32
+	layered       bool
 }
 
 // bufferFor returns the window's current-size buffer, recreating it after a
@@ -59,8 +61,69 @@ func (b *windowBuffer) download() []byte {
 		return nil
 	}
 	out := make([]byte, len(b.pix))
+	procGdiFlush.Call()
 	memCopy(goPtr(&out[0]), b.bits, uintptr(len(out)))
 	return out
+}
+
+// finishPill supplies a premultiplied coverage mask for an OS-composited ball
+// or capsule. An alpha-zero corner also lets pointer events reach the desktop.
+func (b *windowBuffer) finishPill(radius, rim float64, color uint32) {
+	if b.bits == 0 || len(b.pix) == 0 {
+		return
+	}
+	procGdiFlush.Call()
+	memCopy(goPtr(&b.pix[0]), b.bits, uintptr(len(b.pix)))
+	cx, cy := float64(b.w)/2, float64(b.h)/2
+	straight := max(0, cx-cy)
+	edgeStart := max(0, radius-rim-.5)
+	edgeStartSquared := edgeStart * edgeStart
+	border := [3]float64{float64(byte(color >> 16)), float64(byte(color >> 8)), float64(byte(color))}
+	offset := 0
+	for y := int32(0); y < b.h; y++ {
+		dy := float64(y) + .5 - cy
+		for x := int32(0); x < b.w; x++ {
+			dx := max(0, math.Abs(float64(x)+.5-cx)-straight)
+			distSq := dx*dx + dy*dy
+			if distSq < edgeStartSquared {
+				b.pix[offset+3] = 255
+			} else {
+				distance := math.Sqrt(distSq)
+				coverage := max(0, min(1, radius-distance+.5))
+				edge := max(0, min(1, distance-edgeStart))
+				for i, channel := range border {
+					mixed := channel*edge + float64(b.pix[offset+i])*(1-edge)
+					b.pix[offset+i] = byte(mixed*coverage + .5)
+				}
+				b.pix[offset+3] = byte(255*coverage + .5)
+			}
+			offset += 4
+		}
+	}
+	b.layered = true
+	b.upload()
+}
+
+func (b *windowBuffer) presentLayered(hwnd uintptr) error {
+	size, origin := point{b.w, b.h}, point{}
+	blend := blendFunc{BlendOp: acsOver, SourceConstantAlpha: 255, AlphaFormat: acSrcAlpha}
+	ok, _, err := procUpdateLayeredWindow.Call(hwnd, 0, 0,
+		uintptr(unsafe.Pointer(&size)), b.hdc, uintptr(unsafe.Pointer(&origin)),
+		0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
+	if ok == 0 {
+		return err
+	}
+	return nil
+}
+
+func (a *App) paintLayered(hwnd uintptr, draw func(b *windowBuffer)) {
+	procValidateRect.Call(hwnd, 0)
+	b := a.renderWindow(hwnd, draw)
+	if b != nil {
+		if err := b.presentLayered(hwnd); err != nil {
+			a.logger.Warn("present floating window failed", "error", err.Error())
+		}
+	}
 }
 
 func (a *App) releaseBuffers() {

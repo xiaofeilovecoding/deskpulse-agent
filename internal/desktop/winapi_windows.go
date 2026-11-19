@@ -71,7 +71,6 @@ var (
 	procScreenToClient         = user32.NewProc("ScreenToClient")
 	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
 	procCreateRoundRectRgn     = gdi32.NewProc("CreateRoundRectRgn")
-	procCreateEllipticRgn      = gdi32.NewProc("CreateEllipticRgn")
 	procEllipse                = gdi32.NewProc("Ellipse")
 	procRoundRect              = gdi32.NewProc("RoundRect")
 	procPolyline               = gdi32.NewProc("Polyline")
@@ -98,6 +97,7 @@ var (
 	procDeleteDC                   = gdi32.NewProc("DeleteDC")
 	procCreateDIBSection           = gdi32.NewProc("CreateDIBSection")
 	procBitBlt                     = gdi32.NewProc("BitBlt")
+	procGdiFlush                   = gdi32.NewProc("GdiFlush")
 	procAlphaBlend                 = msimg32.NewProc("AlphaBlend")
 	procGetDC                      = user32.NewProc("GetDC")
 	procReleaseDC                  = user32.NewProc("ReleaseDC")
@@ -105,6 +105,8 @@ var (
 	procGetWindowLongW             = user32.NewProc("GetWindowLongW")
 	procGetClassNameW              = user32.NewProc("GetClassNameW")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+	procUpdateLayeredWindow        = user32.NewProc("UpdateLayeredWindow")
+	procValidateRect               = user32.NewProc("ValidateRect")
 	procOpenClipboard              = user32.NewProc("OpenClipboard")
 	procCloseClipboard             = user32.NewProc("CloseClipboard")
 	procEmptyClipboard             = user32.NewProc("EmptyClipboard")
@@ -140,6 +142,7 @@ const (
 	wmApp             = 0x8000
 	wmAppShow         = wmApp + 1
 	wmAppTray         = wmApp + 2
+	wmAppPulse        = wmApp + 12
 	wmSetFont         = 0x0030
 	wmSetTextRaw      = 0x000C
 	emSetSel          = 0x00B1
@@ -259,6 +262,7 @@ const (
 	bmClick         = 0x00F5
 	wsExLayered     = 0x00080000
 	lwaAlpha        = 0x00000002
+	ulwAlpha        = 0x00000002
 	emSetCueBanner  = 0x1501
 	lbGetItemRect   = 0x0198
 	lbItemFromPoint = 0x01A9
@@ -691,13 +695,6 @@ func ellipse(hdc uintptr, r rect, fill, border uint32) {
 	}
 	procDeleteObject.Call(brush)
 	procDeleteObject.Call(pen)
-}
-
-func setCircleRegion(hwnd uintptr, width, height int32) {
-	rgn, _, _ := procCreateEllipticRgn.Call(0, 0, uintptr(width+1), uintptr(height+1))
-	if rgn != 0 {
-		procSetWindowRgn.Call(hwnd, rgn, 1)
-	}
 }
 
 func setRoundRegion(hwnd uintptr, width, height, radius int32) {

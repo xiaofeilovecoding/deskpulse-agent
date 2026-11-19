@@ -27,7 +27,7 @@ func (a *App) createBall() (uintptr, error) {
 	dpi := systemDPI()
 	size := scale(ballSizeDIP, dpi)
 	hwnd, err := createWindow(
-		wsExToolWindow|wsExTopmost|wsExNoActivate,
+		wsExToolWindow|wsExTopmost|wsExNoActivate|wsExLayered,
 		"DeskPulse Agent",
 		wsPopup,
 		0, 0, size, size,
@@ -39,12 +39,11 @@ func (a *App) createBall() (uintptr, error) {
 	a.ball = hwnd
 	a.ballDPI = dpi
 	a.ballSize = size
-	setCircleRegion(hwnd, size, size)
 	a.placeBallInitial()
 	return hwnd, nil
 }
 
-const ballSizeDIP = 38
+const ballSizeDIP = 48
 
 func (a *App) placeBallInitial() {
 	work := workArea(a.ball)
@@ -82,6 +81,7 @@ func clampBall(x, y, size int32, work rect) (int32, int32) {
 
 func (a *App) showBall() {
 	if a.ball != 0 {
+		a.paintBall()
 		showWindow(a.ball, swShowNoActivate)
 	}
 }
@@ -188,15 +188,20 @@ func (a *App) handleBall(message uint32, wparam, lparam uintptr) (bool, uintptr)
 		a.onDPIChanged(dpi)
 		a.ballDPI = dpi
 		a.ballSize = scale(ballSizeDIP, dpi)
-		setCircleRegion(a.ball, a.ballSize, a.ballSize)
 		pos := windowRect(a.ball)
 		work := workArea(a.ball)
 		x, y := clampBall(pos.Left, pos.Top, a.ballSize, work)
 		moveWindow(a.ball, x, y, a.ballSize, a.ballSize)
-		invalidate(a.ball)
+		a.paintBall()
 		return true, 0
 	case wmAppTray:
 		a.handleTrayCallback(lparam)
+		return true, 0
+	case wmAppPulse:
+		if attention := wparam != 0; attention != a.attention {
+			a.attention = attention
+			a.paintBall()
+		}
 		return true, 0
 	}
 	if a.taskbarMsg != 0 && message == a.taskbarMsg {
@@ -217,26 +222,33 @@ func (a *App) onDPIChanged(dpi uint32) {
 }
 
 func (a *App) paintBall() {
-	a.paintWindow(a.ball, a.paintBallInto)
+	a.paintLayered(a.ball, a.paintBallInto)
 }
 
 // paintBallInto draws the ball face into a buffer (paint path and capture).
 func (a *App) paintBallInto(b *windowBuffer) {
 	dpi := b.dpi
-	// Clear the working pixels, then draw the circle stack in software for an
-	// anti-aliased edge: subtle stroke, dark face, single-line waveform icon.
-	// No numbers, no status ring, no animation.
-	for i := range b.pix {
-		b.pix[i] = 0
-	}
+	fillRect(b.hdc, rect{0, 0, b.w, b.h}, a.theme.panel())
 	cx := float64(b.w) / 2
 	cy := float64(b.h) / 2
-	r := float64(b.w)/2 - float64(scale(2, dpi))
-	swCircle(b.pix, b.w, b.h, cx, cy, r+float64(scale(1, dpi)), colorBallEdge)
-	swCircle(b.pix, b.w, b.h, cx, cy, r, colorBallFace)
-	b.upload()
-	box := iconRect(rect{0, 0, b.w, b.h}, scale(22, dpi))
-	drawIcon(b.hdc, "pulse", colorWave, box)
+	r := min(cx, cy) - float64(scale(1, dpi))
+	pixelScale := float64(dpi) / 96
+	if a.attention {
+		procGdiFlush.Call()
+		if b.bits != 0 && len(b.pix) > 0 {
+			memCopy(goPtr(&b.pix[0]), b.bits, uintptr(len(b.pix)))
+			drawAttentionDot(b, cx+r*.58, cy-r*.58, pixelScale)
+			b.upload()
+		}
+	}
+	box := iconRect(rect{0, 0, b.w, b.h}, scale(29, dpi))
+	drawIcon(b.hdc, "pulse", a.theme.accent(), box)
+	b.finishPill(r, pixelScale, a.theme.muted())
+}
+
+func drawAttentionDot(b *windowBuffer, x, y, scale float64) {
+	swCircle(b.pix, b.w, b.h, x, y, 3.4*scale, colorBallFace)
+	swCircle(b.pix, b.w, b.h, x, y, 2.1*scale, colorAmber)
 }
 
 // anchoredRect positions a w×h page near the ball inside the ball's monitor
@@ -267,12 +279,12 @@ func (a *App) anchoredRect(w, h int32, dpi uint32) (int32, int32, rect) {
 	return x, y, work
 }
 
-// createHover builds the 224×152 DIP single-column quick view.
+// createHover builds the floating metrics capsule.
 func (a *App) createHover() (uintptr, error) {
 	dpi := systemDPI()
 	w, h := scale(hoverWDIP, dpi), scale(hoverHDIP, dpi)
 	hwnd, err := createWindow(
-		wsExToolWindow|wsExTopmost|wsExNoActivate,
+		wsExToolWindow|wsExTopmost|wsExNoActivate|wsExLayered,
 		"DeskPulse Agent 指标",
 		wsPopup,
 		0, 0, w, h,
@@ -282,13 +294,15 @@ func (a *App) createHover() (uintptr, error) {
 		return 0, err
 	}
 	a.hover = hwnd
-	setRoundRegion(hwnd, w, h, scale(10, dpi))
 	return hwnd, nil
 }
 
 const (
-	hoverWDIP = 304
-	hoverHDIP = 46
+	hoverHDIP      = 54
+	hoverActionDIP = 56
+	hoverBaseWDIP  = 72
+	hoverMetricDIP = 66
+	hoverWDIP      = hoverBaseWDIP + 4*hoverMetricDIP
 )
 
 var capsuleMetrics = []settings.MetricMask{settings.CPU, settings.Memory, settings.Disk, settings.Latency}
@@ -319,7 +333,6 @@ func (a *App) showHover() {
 	a.positionHover()
 	showWindow(a.hover, swShowNoActivate)
 	a.hoverShown = true
-	invalidate(a.hover)
 	setTimer(a.hover, timerHoverTick, 5000)
 	if a.hoverStep < 10 {
 		setTimer(a.hover, timerHoverAnim, 15)
@@ -351,7 +364,7 @@ func (a *App) positionHover() {
 	dpi := dpiForWindow(a.ball)
 	ball, work := windowRect(a.ball), workArea(a.ball)
 	h := scale(hoverHDIP, dpi)
-	fullWidth := scale(64+60*len(a.metricsForCapsule()), dpi)
+	fullWidth := scale(hoverBaseWDIP+hoverMetricDIP*len(a.metricsForCapsule()), dpi)
 	if fullWidth > work.Right-work.Left {
 		fullWidth = work.Right - work.Left
 	}
@@ -365,20 +378,20 @@ func (a *App) positionHover() {
 	x = max(work.Left, min(x, work.Right-width))
 	y := max(work.Top, min((ball.Top+ball.Bottom-h)/2, work.Bottom-h))
 	moveWindow(a.hover, x, y, width, h)
-	setRoundRegion(a.hover, width, h, h)
+	a.paintLayered(a.hover, a.paintHoverInto)
 }
 
 func (a *App) handleHover(message uint32, wparam, lparam uintptr) (bool, uintptr) {
 	switch message {
 	case wmPaint:
-		a.paintWindow(a.hover, a.paintHoverInto)
+		a.paintLayered(a.hover, a.paintHoverInto)
 		return true, 0
 	case wmEraseBkgnd:
 		return true, 1
 	case wmTimer:
 		switch wparam {
 		case timerHoverTick:
-			invalidate(a.hover)
+			a.paintLayered(a.hover, a.paintHoverInto)
 		case timerHoverExit:
 			killTimer(a.hover, timerHoverExit)
 			p, r := cursorPos(), windowRect(a.hover)
@@ -388,7 +401,6 @@ func (a *App) handleHover(message uint32, wparam, lparam uintptr) (bool, uintptr
 		case timerHoverAnim:
 			a.hoverStep++
 			a.positionHover()
-			invalidate(a.hover)
 			if a.hoverStep >= 10 {
 				killTimer(a.hover, timerHoverAnim)
 			}
@@ -408,7 +420,7 @@ func (a *App) handleHover(message uint32, wparam, lparam uintptr) (bool, uintptr
 	case wmLButtonUp:
 		p := screenToClient(a.hover, cursorPos())
 		b := clientRect(a.hover)
-		edge := scale(46, dpiForWindow(a.hover))
+		edge := scale(hoverActionDIP, dpiForWindow(a.hover))
 		agent := (!a.capsuleOpensRight() && p.X >= b.Right-edge) || (a.capsuleOpensRight() && p.X < edge)
 		a.hideHover()
 		if agent {
@@ -430,20 +442,36 @@ func (a *App) handleHover(message uint32, wparam, lparam uintptr) (bool, uintptr
 func (a *App) paintHoverInto(b *windowBuffer) {
 	t, dpi := a.theme, b.dpi
 	f := a.fontsFor(dpi)
-	roundRect(b.hdc, rect{0, 0, b.w, b.h}, b.h, t.panel(), t.muted())
-	start, end, actionX := int32(5), b.w-scale(46, dpi), b.w-b.h/2
+	fillRect(b.hdc, rect{0, 0, b.w, b.h}, t.panel())
+	nativeScale := float64(dpi) / 96
+	defer b.finishPill(float64(b.h)/2, nativeScale, t.muted())
+	start, end, actionX := scale(7, dpi), b.w-scale(hoverActionDIP, dpi), b.w-b.h/2
 	if a.capsuleOpensRight() {
-		start, end, actionX = scale(46, dpi), b.w-5, b.h/2
+		start, end, actionX = scale(hoverActionDIP, dpi), b.w-scale(7, dpi), b.h/2
 	}
-	iconSize := scale(18, dpi)
-	drawIcon(b.hdc, "sparkle", colorWave, rect{actionX - iconSize/2, (b.h - iconSize) / 2, actionX + iconSize/2, (b.h + iconSize) / 2})
+	seam := end
+	if a.capsuleOpensRight() {
+		seam = start
+	}
+	if end > start {
+		line(b.hdc, []point{{seam, scale(12, dpi)}, {seam, b.h - scale(12, dpi)}}, t.line(), max(1, scale(1, dpi)))
+	}
+	iconSize := scale(23, dpi)
+	actionY := (b.h - iconSize) / 2
+	if end-start >= scale(40, dpi) {
+		actionY = scale(5, dpi)
+		drawText(b.hdc, a.tr("诊断", "Agent"), rect{actionX - b.h/2, scale(29, dpi), actionX + b.h/2, b.h - scale(3, dpi)}, f.Body, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+	}
+	drawIcon(b.hdc, "pulse", t.accent(), rect{actionX - iconSize/2, actionY, actionX + iconSize/2, actionY + iconSize})
 	mask := a.metricsForCapsule()
 	if len(mask) == 0 || end-start < scale(40*len(mask), dpi) {
 		return
 	}
 	snap := a.source.Latest()
-	radius := scale(8, dpi)
-	cy := scale(15, dpi)
+	radius := scale(11, dpi)
+	cy := scale(17, dpi)
+	var rings [2]ringGlyph
+	nrings := 0
 	for i, key := range mask {
 		left := start + int32(i)*(end-start)/int32(len(mask))
 		right := start + int32(i+1)*(end-start)/int32(len(mask))
@@ -452,48 +480,100 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 		switch key {
 		case settings.CPU:
 			label = "CPU"
-			capsuleRing(b.hdc, cx, cy, radius, snap.CPU, t.muted(), colorWave)
+			rings[nrings] = ringGlyph{cx, cy, snap.CPU, t.accent()}
+			nrings++
 		case settings.Memory:
 			label = a.tr("内存", "RAM")
 			var pct *float64
 			if snap.Memory != nil {
 				pct = &snap.Memory.Percent
 			}
-			capsuleRing(b.hdc, cx, cy, radius, pct, t.muted(), rgb(158, 193, 237))
+			rings[nrings] = ringGlyph{cx, cy, pct, t.accent()}
+			nrings++
 		case settings.Disk:
 			label = "I/O"
-			line(b.hdc, []point{{cx - radius, cy}, {cx + radius, cy}}, t.muted(), 1)
-			capsuleBars(b.hdc, cx, cy, radius, snap.ReadHistory, snap.WriteHistory)
+			if snap.Disk.ReadBPS == nil && snap.Disk.WriteBPS == nil {
+				drawUnknown(b.hdc, cx, cy, dpi, t.muted())
+			} else {
+				line(b.hdc, []point{{cx - radius, cy}, {cx + radius, cy}}, t.muted(), max(1, scale(1, dpi)))
+				capsuleBars(b.hdc, cx, cy, radius, max(2, scale(2, dpi)), snap.ReadHistory, snap.WriteHistory)
+			}
 		case settings.Latency:
 			label = a.tr("延迟", "RTT")
-			state := firstRTTState(snap, a.cfg.Get().RTTTargets)
+			targets := a.cfg.Get().RTTTargets
+			if a.opts.Synthetic && len(targets) == 0 && len(snap.RTT) > 0 {
+				targets = []string{snap.RTT[0].Target}
+			}
+			state := firstRTTState(snap, targets)
 			if state == winmetrics.StateOK || state == winmetrics.StatePartial {
-				line(b.hdc, []point{{cx - radius, cy + 4}, {cx - 4, cy}, {cx, cy + 2}, {cx + 4, cy - 4}, {cx + radius, cy - 2}}, colorWave, 2)
+				x1, y1 := scale(4, dpi), scale(2, dpi)
+				line(b.hdc, []point{{cx - radius, cy + 2*y1}, {cx - x1, cy}, {cx, cy + y1}, {cx + x1, cy - 2*y1}, {cx + radius, cy - y1}}, t.accent(), max(2, scale(2, dpi)))
+			} else if state != "" && state != winmetrics.StateNoTarget && state != winmetrics.StatePending {
+				drawUnknown(b.hdc, cx, cy, dpi, t.amber())
 			} else {
-				line(b.hdc, []point{{cx - radius, cy}, {cx - 3, cy}}, t.muted(), 1)
-				line(b.hdc, []point{{cx + 3, cy}, {cx + radius, cy}}, t.muted(), 1)
+				drawUnknown(b.hdc, cx, cy, dpi, t.muted())
 			}
 		}
-		drawText(b.hdc, label, rect{left, scale(25, dpi), right, b.h - scale(2, dpi)}, f.Small, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawText(b.hdc, label, rect{left, scale(29, dpi), right, b.h - scale(3, dpi)}, f.Body, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+	}
+	if (nrings != 0 || a.attention) && len(b.pix) > 0 && b.bits != 0 {
+		procGdiFlush.Call()
+		memCopy(goPtr(&b.pix[0]), b.bits, uintptr(len(b.pix)))
+		for _, glyph := range rings[:nrings] {
+			drawRingGlyph(b, glyph, float64(radius), nativeScale, t.muted())
+		}
+		if a.attention {
+			d := float64(scale(10, dpi))
+			drawAttentionDot(b, float64(actionX)+d, float64(actionY)+d/2, nativeScale)
+		}
+		b.upload()
 	}
 }
 
-func capsuleRing(hdc uintptr, x, y, r int32, percent *float64, base, accent uint32) {
-	points := make([]point, 33)
-	for i := range points {
-		angle := 2*math.Pi*float64(i)/32 - math.Pi/2
-		points[i] = point{x + int32(math.Round(float64(r)*math.Cos(angle))), y + int32(math.Round(float64(r)*math.Sin(angle)))}
-	}
-	line(hdc, points, base, 1)
-	if percent != nil {
-		count := 1 + int(max(0, min(100, *percent))*32/100)
-		if count > 1 {
-			line(hdc, points[:count], accent, 2)
+func drawUnknown(hdc uintptr, cx, cy int32, dpi uint32, color uint32) {
+	outer, inner := scale(8, dpi), scale(3, dpi)
+	line(hdc, []point{{cx - outer, cy}, {cx - inner, cy}}, color, max(1, scale(1, dpi)))
+	line(hdc, []point{{cx + inner, cy}, {cx + outer, cy}}, color, max(1, scale(1, dpi)))
+}
+
+type ringGlyph struct {
+	x, y   int32
+	value  *float64
+	accent uint32
+}
+
+func drawRingGlyph(b *windowBuffer, glyph ringGlyph, radius, scale float64, base uint32) {
+	window := int32(math.Ceil(radius + 2*scale))
+	for y := max(0, glyph.y-window); y < min(b.h, glyph.y+window+1); y++ {
+		for x := max(0, glyph.x-window); x < min(b.w, glyph.x+window+1); x++ {
+			dx, dy := float64(x-glyph.x)+.5, float64(y-glyph.y)+.5
+			distance := math.Abs(math.Hypot(dx, dy) - radius)
+			theta := math.Atan2(dx, -dy) / (2 * math.Pi)
+			if theta < 0 {
+				theta++
+			}
+			color, halfWidth := base, .66*scale
+			if glyph.value == nil {
+				if int(theta*12)%2 != 0 {
+					continue
+				}
+			} else if theta < max(0, min(100, *glyph.value))/100 {
+				color, halfWidth = glyph.accent, 1.18*scale
+			}
+			alpha := max(0, min(1, halfWidth-distance+.5))
+			if alpha == 0 {
+				continue
+			}
+			offset := int((y*b.w + x) * 4)
+			for i, component := range []byte{byte(color >> 16), byte(color >> 8), byte(color)} {
+				b.pix[offset+i] = byte(float64(component)*alpha + float64(b.pix[offset+i])*(1-alpha))
+			}
+			b.pix[offset+3] = 255
 		}
 	}
 }
 
-func capsuleBars(hdc uintptr, x, y, r int32, read, write []float64) {
+func capsuleBars(hdc uintptr, x, y, r, thickness int32, read, write []float64) {
 	peak := float64(512 * 1024)
 	for _, seq := range [][]float64{read, write} {
 		for _, sample := range seq[max(0, len(seq)-5):] {
@@ -509,9 +589,9 @@ func capsuleBars(hdc uintptr, x, y, r int32, read, write []float64) {
 			}
 			at := x - r + 2*r*int32(j)/5
 			if i == 0 {
-				line(hdc, []point{{at, y - 1}, {at, y - 1 - height}}, colorWave, 2)
+				line(hdc, []point{{at, y - 1}, {at, y - 1 - height}}, colorWave, thickness)
 			} else {
-				line(hdc, []point{{at, y + 1}, {at, y + 1 + height}}, rgb(158, 193, 237), 2)
+				line(hdc, []point{{at, y + 1}, {at, y + 1 + height}}, rgb(158, 193, 237), thickness)
 			}
 		}
 	}

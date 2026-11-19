@@ -102,6 +102,7 @@ type App struct {
 	hoverShown   bool
 	hoverStep    int
 	hoverMask    settings.MetricMask
+	attention    bool
 
 	panelDPI      uint32
 	panelHits     []popupHit
@@ -360,12 +361,23 @@ func (a *App) recordIncidents() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	loggedFailure := false
+	attention := false
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case now := <-ticker.C:
 			s := a.source.Latest()
+			nextAttention := s.CPU != nil && sustainedHigh(s.CPUHistory, 90) ||
+				s.Memory != nil && sustainedHigh(s.MemHistory, 90)
+			if nextAttention != attention {
+				attention = nextAttention
+				value := uintptr(0)
+				if attention {
+					value = 1
+				}
+				procPostMessageW.Call(a.ball, wmAppPulse, value, 0)
+			}
 			var cpu, memory *float64
 			if s.CPU != nil {
 				value := *s.CPU / 100

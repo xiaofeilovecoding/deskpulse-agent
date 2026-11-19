@@ -98,8 +98,10 @@ func buildSyntheticSnapshot() winmetrics.Snapshot {
 		Disk: winmetrics.DiskRate{
 			ReadBPS: &read, WriteBPS: &write, TS: now, State: winmetrics.StateOK,
 		},
-		Processes: flattenTree(tree),
-		Tree:      tree,
+		ReadHistory:  []float64{.5e6, 1.2e6, .8e6, 2.0e6, 2.4e6},
+		WriteHistory: []float64{.2e6, .8e6, .4e6, 1.3e6, .8e6},
+		Processes:    flattenTree(tree),
+		Tree:         tree,
 		RTT: []winmetrics.RTTTarget{{
 			Target: "www.baidu.com", Display: "百度", State: winmetrics.StateOK,
 			AvgMS: &rttAvg, MaxMS: &rttMax, Loss: &loss, Sent: 3, Recv: 3, TS: now,
@@ -188,6 +190,11 @@ func (a *App) captureAt(dpi uint32) error {
 		if b == nil {
 			return fmt.Errorf("render %s failed", name)
 		}
+		if b.layered {
+			if err := b.presentLayered(hwnd); err != nil {
+				return fmt.Errorf("present %s: %w", name, err)
+			}
+		}
 		return saveBufferPNG(b, filepath.Join(dir, name))
 	}
 
@@ -199,7 +206,6 @@ func (a *App) captureAt(dpi uint32) error {
 	}
 	hw, hh := size(hoverWDIP, hoverHDIP)
 	moveWindow(a.hover, 0, 0, hw, hh)
-	setRoundRegion(a.hover, hw, hh, scale(10, dpi))
 	if err := shoot(a.hover, "hover.png", a.paintHoverBuffer); err != nil {
 		return err
 	}
@@ -407,14 +413,14 @@ func (a *App) settingsChildren() []uintptr {
 	}
 }
 
-// saveBufferPNG converts the 32bpp BGRX buffer to PNG.
+// saveBufferPNG preserves a layered surface's real alpha.
 func saveBufferPNG(b *windowBuffer, path string) error {
 	w, h := int(b.w), int(b.h)
 	raw := b.download()
 	if len(raw) == 0 {
 		return fmt.Errorf("empty buffer for %s", path)
 	}
-	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			i := (y*w + x) * 4
@@ -423,6 +429,9 @@ func saveBufferPNG(b *windowBuffer, path string) error {
 			img.Pix[o+1] = raw[i+1] // G
 			img.Pix[o+2] = raw[i+0] // B
 			img.Pix[o+3] = 255
+			if b.layered {
+				img.Pix[o+3] = raw[i+3]
+			}
 		}
 	}
 	var buf bytes.Buffer

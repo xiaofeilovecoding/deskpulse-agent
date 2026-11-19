@@ -28,3 +28,12 @@ go build -trimpath -ldflags '-H=windowsgui' -o dist/deskpulse-agent.exe ./cmd/de
 ## 接口与验收
 
 [数据格式和公开样例](docs/contracts/README.md) · [发布状态和验收记录](docs/preview.md)
+
+## macOS 菜单栏预览
+
+macOS 13 及以上可用 Xcode Command Line Tools 构建 Intel／Apple Silicon 通用应用。当前菜单栏预览支持本机 CPU、近似可用内存及受设备支持限制的磁盘 I/O。
+
+```sh
+bash macos/build.sh
+open "dist/DeskPulse Agent.app"
+```

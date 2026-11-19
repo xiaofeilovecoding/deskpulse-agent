@@ -15,4 +15,8 @@ Run `dist/deskpulse-agent.exe` as a regular Windows user. Hover over the floatin
 
 Probes and incident delivery are opt-in. Diagnostic records and settings stay under `%LOCALAPPDATA%\DeskPulseAgent`, with provider credentials protected by Windows DPAPI. The optional `--event-webhook` argument enables anonymized incident delivery to one explicit HTTPS destination. A local JSON export is available via the tray menu.
 
+## macOS menu-bar preview
+
+On macOS 13 or later with Xcode Command Line Tools, run `bash macos/build.sh` and open `dist/DeskPulse Agent.app`. The universal build includes Intel and Apple Silicon. The native menu-bar preview shows CPU and estimated available memory, with disk I/O where the device provides the counters.
+
 [中文](README.md) · [Current release status](docs/preview.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [License](LICENSE)
