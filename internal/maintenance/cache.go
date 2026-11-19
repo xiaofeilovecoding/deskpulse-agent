@@ -57,7 +57,7 @@ func cacheName(name string) bool {
 }
 
 func (c *Cache) StageSnapshot(data []byte) (string, error) {
-	if len(data) > 1<<20 {
+	if len(data) > snapshotLimit {
 		return "", errors.New("snapshot is larger than 1 MiB")
 	}
 	name := "snapshot-" + newID() + ".tmp"
@@ -87,7 +87,7 @@ func (c *Cache) Preview(now time.Time) ([]Entry, error) {
 			continue
 		}
 		info, err := c.root.Lstat(filepath.Join(cacheDir, item.Name()))
-		if err != nil || !info.Mode().IsRegular() || now.Sub(info.ModTime()) < 7*24*time.Hour {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > snapshotLimit || now.Sub(info.ModTime()) < 7*24*time.Hour {
 			continue
 		}
 		out = append(out, Entry{item.Name(), info.Size(), info})

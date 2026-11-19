@@ -203,6 +203,9 @@ func (a *App) handleBall(message uint32, wparam, lparam uintptr) (bool, uintptr)
 			a.paintBall()
 		}
 		return true, 0
+	case wmAppCache:
+		a.finishCacheWork()
+		return true, 0
 	}
 	if a.taskbarMsg != 0 && message == a.taskbarMsg {
 		// Explorer restarted and discarded every notification icon. NIM_ADD
@@ -237,7 +240,7 @@ func (a *App) paintBallInto(b *windowBuffer) {
 		procGdiFlush.Call()
 		if b.bits != 0 && len(b.pix) > 0 {
 			memCopy(goPtr(&b.pix[0]), b.bits, uintptr(len(b.pix)))
-			drawAttentionDot(b, cx+r*.58, cy-r*.58, pixelScale)
+			a.drawAttentionDot(b, cx+r*.58, cy-r*.58, pixelScale)
 			b.upload()
 		}
 	}
@@ -246,9 +249,9 @@ func (a *App) paintBallInto(b *windowBuffer) {
 	b.finishPill(r, pixelScale, a.theme.muted())
 }
 
-func drawAttentionDot(b *windowBuffer, x, y, scale float64) {
-	swCircle(b.pix, b.w, b.h, x, y, 3.4*scale, colorBallFace)
-	swCircle(b.pix, b.w, b.h, x, y, 2.1*scale, colorAmber)
+func (a *App) drawAttentionDot(b *windowBuffer, x, y, scale float64) {
+	swCircle(b.pix, b.w, b.h, x, y, 3.4*scale, a.theme.panel())
+	swCircle(b.pix, b.w, b.h, x, y, 2.1*scale, a.theme.amber())
 }
 
 // anchoredRect positions a w×h page near the ball inside the ball's monitor
@@ -305,12 +308,12 @@ const (
 	hoverWDIP      = hoverBaseWDIP + 4*hoverMetricDIP
 )
 
-var capsuleMetrics = []settings.MetricMask{settings.CPU, settings.Memory, settings.Disk, settings.Latency}
+var capsuleMetrics = [...]settings.MetricMask{settings.CPU, settings.Memory, settings.Disk, settings.Latency, settings.GPU}
 
 func (a *App) metricsForCapsule() []settings.MetricMask {
 	var visible []settings.MetricMask
 	for _, metric := range capsuleMetrics {
-		if a.hoverMask&metric == 0 {
+		if a.hoverMask&metric == 0 && (metric != settings.GPU || a.hoverGPU) {
 			visible = append(visible, metric)
 		}
 	}
@@ -323,9 +326,11 @@ func (a *App) showHover() {
 	}
 	cfg := a.cfg.Get()
 	a.hoverMask = cfg.HiddenMetrics | cfg.DisabledMetrics
+	a.hoverGPU = a.source.Latest().GPUAvailable
 	if len(a.metricsForCapsule()) == 0 {
 		return
 	}
+	a.requestGPU(true)
 	a.hoverStep = 10
 	if animationsAllowed() {
 		a.hoverStep = 0
@@ -353,6 +358,7 @@ func (a *App) hideHover() {
 	}
 	showWindow(a.hover, swHide)
 	a.hoverShown = false
+	a.requestGPU(a.popupVisible())
 }
 
 func (a *App) capsuleOpensRight() bool {
@@ -470,7 +476,7 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 	snap := a.source.Latest()
 	radius := scale(11, dpi)
 	cy := scale(17, dpi)
-	var rings [2]ringGlyph
+	var rings [3]ringGlyph
 	nrings := 0
 	for i, key := range mask {
 		left := start + int32(i)*(end-start)/int32(len(mask))
@@ -490,13 +496,17 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 			}
 			rings[nrings] = ringGlyph{cx, cy, pct, t.accent()}
 			nrings++
+		case settings.GPU:
+			label = "GPU"
+			rings[nrings] = ringGlyph{cx, cy, snap.GPU, t.accent()}
+			nrings++
 		case settings.Disk:
 			label = "I/O"
 			if snap.Disk.ReadBPS == nil && snap.Disk.WriteBPS == nil {
 				drawUnknown(b.hdc, cx, cy, dpi, t.muted())
 			} else {
 				line(b.hdc, []point{{cx - radius, cy}, {cx + radius, cy}}, t.muted(), max(1, scale(1, dpi)))
-				capsuleBars(b.hdc, cx, cy, radius, max(2, scale(2, dpi)), snap.ReadHistory, snap.WriteHistory)
+				capsuleBars(b.hdc, cx, cy, radius, max(2, scale(2, dpi)), t.accent(), snap.ReadHistory, snap.WriteHistory)
 			}
 		case settings.Latency:
 			label = a.tr("延迟", "RTT")
@@ -524,7 +534,7 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 		}
 		if a.attention {
 			d := float64(scale(10, dpi))
-			drawAttentionDot(b, float64(actionX)+d, float64(actionY)+d/2, nativeScale)
+			a.drawAttentionDot(b, float64(actionX)+d, float64(actionY)+d/2, nativeScale)
 		}
 		b.upload()
 	}
@@ -573,7 +583,7 @@ func drawRingGlyph(b *windowBuffer, glyph ringGlyph, radius, scale float64, base
 	}
 }
 
-func capsuleBars(hdc uintptr, x, y, r, thickness int32, read, write []float64) {
+func capsuleBars(hdc uintptr, x, y, r, thickness int32, accent uint32, read, write []float64) {
 	peak := float64(512 * 1024)
 	for _, seq := range [][]float64{read, write} {
 		for _, sample := range seq[max(0, len(seq)-5):] {
@@ -589,7 +599,7 @@ func capsuleBars(hdc uintptr, x, y, r, thickness int32, read, write []float64) {
 			}
 			at := x - r + 2*r*int32(j)/5
 			if i == 0 {
-				line(hdc, []point{{at, y - 1}, {at, y - 1 - height}}, colorWave, thickness)
+				line(hdc, []point{{at, y - 1}, {at, y - 1 - height}}, accent, thickness)
 			} else {
 				line(hdc, []point{{at, y + 1}, {at, y + 1 + height}}, rgb(158, 193, 237), thickness)
 			}

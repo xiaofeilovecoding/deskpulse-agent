@@ -20,6 +20,7 @@ const (
 	trayCacheClear   = 7
 	trayCacheRestore = 8
 	trayLanguage     = 9
+	trayAppearance   = 10
 	trayHiddenBase   = 20
 	trayDisabledBase = 30
 )
@@ -84,7 +85,7 @@ func (a *App) showTrayMenu(owner uintptr) {
 		if sub == 0 {
 			continue
 		}
-		for i, label := range []string{"CPU", a.tr("内存", "RAM"), "I/O", a.tr("延迟", "RTT")} {
+		for i, label := range []string{"CPU", a.tr("内存", "RAM"), "I/O", a.tr("延迟", "RTT"), a.tr("GPU（可用时）", "GPU (when available)")} {
 			flags := uint32(mfString)
 			if group.mask&capsuleMetrics[i] == 0 {
 				flags |= 0x8 // MF_CHECKED
@@ -93,7 +94,8 @@ func (a *App) showTrayMenu(owner uintptr) {
 		}
 		appendMenu(menu, 0x10, sub, group.title) // MF_POPUP
 	}
-	appendMenu(menu, mfString, trayLanguage, a.tr("托盘和本地诊断换成英文", "Tray and local diagnosis in Chinese"))
+	appendMenu(menu, mfString, trayLanguage, a.tr("切换到英文", "Switch to Chinese"))
+	appendMenu(menu, mfString, trayAppearance, a.appearanceAction())
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString, trayQuitCmd, a.tr("退出", "Quit"))
 
@@ -123,6 +125,8 @@ func (a *App) showTrayMenu(owner uintptr) {
 		if err := a.cfg.Save(cfg); err != nil {
 			ShowError(err.Error())
 		}
+	case trayAppearance:
+		a.toggleAppearance()
 	case trayQuitCmd:
 		a.quit()
 	default:

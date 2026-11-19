@@ -20,11 +20,12 @@ import (
 
 // KeyStatus is safe to return to the UI: it contains no key material.
 type KeyStatus struct {
-	Configured bool   `json:"configured"`
-	Source     string `json:"source"`
-	Model      string `json:"model"`
-	BaseURL    string `json:"base_url"`
-	Error      string `json:"error,omitempty"`
+	Configured bool                   `json:"configured"`
+	Source     string                 `json:"source"`
+	Model      string                 `json:"model"`
+	BaseURL    string                 `json:"base_url"`
+	Provider   settings.ModelProvider `json:"provider"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 // Preview is the exact bounded scope that would be sent.
@@ -35,39 +36,75 @@ type Preview struct {
 	AliasCount    int     `json:"alias_count"`
 }
 
+// PreparedAnalysis freezes the anonymous snapshot and destination shown in
+// the confirmation dialog. A later sample cannot join an approved request.
+type PreparedAnalysis struct {
+	preview  Preview
+	aliases  map[string]string
+	profile  settings.ModelProfile
+	preset   string
+	language string
+}
+
+func (p PreparedAnalysis) Destination() settings.ModelProfile { return p.profile }
+func (p PreparedAnalysis) EvidenceCount() int                 { return p.preview.EvidenceCount }
+func (p PreparedAnalysis) WireJSON() string                   { return p.preview.WireJSON }
+func (p PreparedAnalysis) Seconds() int                       { return p.preview.Summary.WindowSeconds }
+
 // Options configures the diagnostic service.
 type Options struct {
-	Store      *store.Store
-	BaseURL    string
-	Model      func() string
-	EnvKey     func() string
-	Target     func() string
-	Targets    func() []string
-	DPAPIKey   func() (string, error)
-	DPAPIStore func(string) error
-	DPAPIClear func() error
-	HTTPClient *http.Client
-	Timeout    time.Duration
-	Now        func() time.Time
-	Logger     *slog.Logger
+	Store       *store.Store
+	BaseURL     string
+	Model       func() string
+	Profile     func() settings.ModelProfile
+	Credentials func(settings.ModelProfile) KeyStorage
+	EnvKey      func() string
+	Target      func() string
+	Targets     func() []string
+	DPAPIKey    func() (string, error)
+	DPAPIStore  func(string) error
+	DPAPIClear  func() error
+	HTTPClient  *http.Client
+	Timeout     time.Duration
+	Now         func() time.Time
+	Logger      *slog.Logger
+}
+
+type KeyStorage interface {
+	Get() (string, error)
+	Set(string) error
+	Clear() error
+}
+
+type modelConfiguration struct {
+	profile  settings.ModelProfile
+	client   *Client
+	getKey   func() (string, error)
+	saveKey  func(string) error
+	clearKey func() error
+	envKey   func() string
 }
 
 // Service owns session-only credentials and at most one active analysis.
 type Service struct {
-	store      *store.Store
-	client     *Client
-	model      func() string
-	envKey     func() string
-	target     func() string
-	targets    func() []string
-	dpapiKey   func() (string, error)
-	dpapiStore func(string) error
-	dpapiClear func() error
-	now        func() time.Time
-	log        *slog.Logger
+	store       *store.Store
+	client      *Client
+	model       func() string
+	profile     func() settings.ModelProfile
+	credentials func(settings.ModelProfile) KeyStorage
+	timeout     time.Duration
+	httpClient  *http.Client
+	envKey      func() string
+	target      func() string
+	targets     func() []string
+	dpapiKey    func() (string, error)
+	dpapiStore  func(string) error
+	dpapiClear  func() error
+	now         func() time.Time
+	log         *slog.Logger
 
 	mu      sync.Mutex
-	session string
+	session map[string]string
 	active  map[string]context.CancelFunc
 }
 
@@ -107,44 +144,85 @@ func New(opts Options) *Service {
 		client.HTTP = opts.HTTPClient
 	}
 	return &Service{
-		store:      opts.Store,
-		client:     client,
-		model:      opts.Model,
-		envKey:     opts.EnvKey,
-		target:     opts.Target,
-		targets:    opts.Targets,
-		dpapiKey:   opts.DPAPIKey,
-		dpapiStore: opts.DPAPIStore,
-		dpapiClear: opts.DPAPIClear,
-		now:        opts.Now,
-		log:        opts.Logger,
-		active:     make(map[string]context.CancelFunc),
+		store:       opts.Store,
+		client:      client,
+		model:       opts.Model,
+		profile:     opts.Profile,
+		credentials: opts.Credentials,
+		timeout:     opts.Timeout,
+		httpClient:  opts.HTTPClient,
+		envKey:      opts.EnvKey,
+		target:      opts.Target,
+		targets:     opts.Targets,
+		dpapiKey:    opts.DPAPIKey,
+		dpapiStore:  opts.DPAPIStore,
+		dpapiClear:  opts.DPAPIClear,
+		now:         opts.Now,
+		log:         opts.Logger,
+		active:      make(map[string]context.CancelFunc),
+		session:     make(map[string]string),
 	}
+}
+
+func (s *Service) configuration(draft *settings.ModelProfile) modelConfiguration {
+	config := modelConfiguration{
+		profile: settings.ModelProfile{Provider: settings.DeepSeek, BaseURL: s.client.BaseURL, Model: s.model()},
+		client:  s.client, getKey: s.dpapiKey, saveKey: s.dpapiStore, clearKey: s.dpapiClear, envKey: s.envKey,
+	}
+	if s.profile == nil {
+		return config
+	}
+	profile := s.profile()
+	if draft != nil {
+		profile = *draft
+	}
+	config.profile = profile
+	config.client = newProfileClient(profile, s.timeout)
+	if s.httpClient != nil {
+		config.client.HTTP.Transport = s.httpClient.Transport
+	}
+	if profile.Provider == settings.DeepSeek && profile.BaseURL == settings.DeepSeek.DefaultURL() {
+		return config
+	}
+	config.envKey = func() string { return "" }
+	if s.credentials != nil {
+		binding := s.credentials(profile)
+		config.getKey, config.saveKey, config.clearKey = binding.Get, binding.Set, binding.Clear
+	} else {
+		config.getKey = func() (string, error) { return "", os.ErrNotExist }
+		config.saveKey = func(string) error { return errors.New("凭据存储未配置") }
+		config.clearKey = func() error { return nil }
+	}
+	return config
 }
 
 // Status exposes configuration presence only. It never returns a key or a
 // key fragment. A missing credentials file is "not configured", not an error.
 func (s *Service) Status() KeyStatus {
+	return s.status(s.configuration(nil))
+}
+
+func (s *Service) StatusFor(profile settings.ModelProfile) KeyStatus {
+	return s.status(s.configuration(&profile))
+}
+
+func (s *Service) status(config modelConfiguration) KeyStatus {
 	s.mu.Lock()
-	session := s.session
+	session := s.session[config.profile.CredentialScope()]
 	s.mu.Unlock()
 	source := "none"
 	configured := false
-	status := KeyStatus{Model: s.model(), BaseURL: s.client.BaseURL}
+	status := KeyStatus{Model: config.profile.Model, BaseURL: config.profile.BaseURL, Provider: config.profile.Provider}
 	if session != "" {
 		source = "session"
 		configured = true
-	} else if key, err := s.dpapiKey(); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			source = "none"
-		} else {
-			source = "dpapi_error"
-			status.Error = "读取 DPAPI 凭据失败"
-		}
+	} else if key, err := config.getKey(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		source = "dpapi_error"
+		status.Error = "读取 DPAPI 凭据失败"
 	} else if strings.TrimSpace(key) != "" {
 		source = "dpapi"
 		configured = true
-	} else if strings.TrimSpace(s.envKey()) != "" {
+	} else if strings.TrimSpace(config.envKey()) != "" {
 		source = "environment"
 		configured = true
 	}
@@ -164,34 +242,44 @@ func (s *Service) SetSessionKey(key string) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
+	scope := s.configuration(nil).profile.CredentialScope()
 	s.mu.Lock()
-	s.session = key
+	s.session[scope] = key
 	s.mu.Unlock()
 	return nil
 }
 
 // ClearSessionKey removes the in-memory override.
 func (s *Service) ClearSessionKey() {
+	scope := s.configuration(nil).profile.CredentialScope()
 	s.mu.Lock()
-	s.session = ""
+	delete(s.session, scope)
 	s.mu.Unlock()
 }
 
 // SetPersistentKey stores a key through the DPAPI callback and clears the
 // in-memory override. The service never returns the key.
 func (s *Service) SetPersistentKey(key string) error {
+	return s.setPersistentKey(s.configuration(nil), key)
+}
+
+func (s *Service) SetPersistentKeyFor(profile settings.ModelProfile, key string) error {
+	return s.setPersistentKey(s.configuration(&profile), key)
+}
+
+func (s *Service) setPersistentKey(config modelConfiguration, key string) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return s.ClearPersistentKey()
+		return s.clearPersistentKey(config)
 	}
 	if err := validateKey(key); err != nil {
 		return err
 	}
-	if err := s.dpapiStore(key); err != nil {
+	if err := config.saveKey(key); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.session = ""
+	delete(s.session, config.profile.CredentialScope())
 	s.mu.Unlock()
 	return nil
 }
@@ -199,11 +287,19 @@ func (s *Service) SetPersistentKey(key string) error {
 // ClearPersistentKey removes the DPAPI-protected key. Environment fallback is
 // intentionally left intact.
 func (s *Service) ClearPersistentKey() error {
-	if err := s.dpapiClear(); err != nil {
+	return s.clearPersistentKey(s.configuration(nil))
+}
+
+func (s *Service) ClearPersistentKeyFor(profile settings.ModelProfile) error {
+	return s.clearPersistentKey(s.configuration(&profile))
+}
+
+func (s *Service) clearPersistentKey(config modelConfiguration) error {
+	if err := config.clearKey(); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.session = ""
+	delete(s.session, config.profile.CredentialScope())
 	s.mu.Unlock()
 	return nil
 }
@@ -220,39 +316,43 @@ func validateKey(key string) error {
 	return nil
 }
 
-func (s *Service) currentKey() (key, source string) {
+func (s *Service) currentKey(config modelConfiguration) (key, source string) {
 	s.mu.Lock()
-	session := s.session
+	session := s.session[config.profile.CredentialScope()]
 	s.mu.Unlock()
 	if session != "" {
 		return session, "session"
 	}
-	if k, err := s.dpapiKey(); err == nil && strings.TrimSpace(k) != "" {
+	if k, err := config.getKey(); err == nil && strings.TrimSpace(k) != "" {
 		return strings.TrimSpace(k), "dpapi"
 	}
-	return strings.TrimSpace(s.envKey()), "environment"
+	return strings.TrimSpace(config.envKey()), "environment"
 }
 
 // TestConnection runs a lightweight authenticated request.
 func (s *Service) TestConnection(ctx context.Context) error {
-	key, _ := s.currentKey()
-	if key == "" {
-		return ErrNoKey
-	}
-	return s.client.TestConnection(ctx, key)
+	return s.testConnection(ctx, s.configuration(nil), "")
 }
 
 // TestConnectionWithKey tests a candidate key without persisting it. An empty
 // candidate tests the currently configured key.
 func (s *Service) TestConnectionWithKey(ctx context.Context, key string) error {
+	return s.testConnection(ctx, s.configuration(nil), key)
+}
+
+func (s *Service) TestConnectionFor(ctx context.Context, profile settings.ModelProfile, key string) error {
+	return s.testConnection(ctx, s.configuration(&profile), key)
+}
+
+func (s *Service) testConnection(ctx context.Context, config modelConfiguration, key string) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return s.TestConnection(ctx)
+		key, _ = s.currentKey(config)
 	}
 	if err := validateKey(key); err != nil {
 		return err
 	}
-	return s.client.TestConnection(ctx, key)
+	return config.client.TestConnection(ctx, key)
 }
 
 // Preview builds the exact summary that would be sent, without sending it.
@@ -279,6 +379,33 @@ func previewOf(summary Summary, aliases map[string]string) (Preview, error) {
 		return Preview{}, err
 	}
 	return Preview{Summary: summary, WireJSON: string(wire), EvidenceCount: len(summary.Evidence), AliasCount: len(aliases)}, nil
+}
+
+func (s *Service) PreparePreset(ctx context.Context, seconds int, presetID, language string) (PreparedAnalysis, error) {
+	preset, err := normalizePreset(presetID)
+	if err != nil {
+		return PreparedAnalysis{}, err
+	}
+	profile := s.configuration(nil).profile
+	summary, aliases, err := BuildDesktopSummary(ctx, s.store, seconds, false, s.now(), s.targets())
+	if err != nil {
+		return PreparedAnalysis{}, err
+	}
+	preview, err := previewOf(summary, aliases)
+	if err != nil {
+		return PreparedAnalysis{}, err
+	}
+	if len(preview.WireJSON) > 24<<10 {
+		return PreparedAnalysis{}, &APIError{Code: "summary_too_large", Message: "诊断摘要超过发送上限"}
+	}
+	return PreparedAnalysis{preview: preview, aliases: aliases, profile: profile, preset: preset, language: language}, nil
+}
+
+func (s *Service) StartPrepared(prepared PreparedAnalysis) (string, error) {
+	if prepared.EvidenceCount() == 0 {
+		return "", errors.New("没有可发送的证据")
+	}
+	return s.startWithPrepared(prepared.Seconds(), 0, false, true, prepared.preset, &prepared)
 }
 
 // Start creates a v0.1-compatible minute analysis.
@@ -309,9 +436,17 @@ func (s *Service) StartPreset(seconds int, presetID string, includeProcessNames 
 }
 
 func (s *Service) start(seconds, minutes int, includeProcessNames, desktop bool, preset string) (string, error) {
-	key, _ := s.currentKey()
+	return s.startWithPrepared(seconds, minutes, includeProcessNames, desktop, preset, nil)
+}
+
+func (s *Service) startWithPrepared(seconds, minutes int, includeProcessNames, desktop bool, preset string, prepared *PreparedAnalysis) (string, error) {
+	config := s.configuration(nil)
+	if prepared != nil && config.profile != prepared.profile {
+		return "", &APIError{Code: "model_changed", Message: "模型或地址已更改，请重新确认"}
+	}
+	key, _ := s.currentKey(config)
 	if key == "" {
-		return "", ErrNoKey
+		return "", config.client.providerError(ErrNoKey)
 	}
 	s.mu.Lock()
 	if len(s.active) > 0 {
@@ -325,7 +460,7 @@ func (s *Service) start(seconds, minutes int, includeProcessNames, desktop bool,
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.active[id] = cancel
-	model := s.model()
+	model := config.profile.Model
 	s.mu.Unlock()
 
 	now := s.now()
@@ -349,11 +484,11 @@ func (s *Service) start(seconds, minutes int, includeProcessNames, desktop bool,
 		cancel()
 		return "", err
 	}
-	go s.run(runCtx, id, seconds, minutes, includeProcessNames, desktop, preset, model, key)
+	go s.run(runCtx, id, seconds, minutes, includeProcessNames, desktop, preset, model, key, config.client, prepared)
 	return id, nil
 }
 
-func (s *Service) run(ctx context.Context, id string, seconds, minutes int, include, desktop bool, preset, model, key string) {
+func (s *Service) run(ctx context.Context, id string, seconds, minutes int, include, desktop bool, preset, model, key string, client *Client, prepared *PreparedAnalysis) {
 	start := s.now()
 	defer func() {
 		s.mu.Lock()
@@ -364,7 +499,9 @@ func (s *Service) run(ctx context.Context, id string, seconds, minutes int, incl
 	var summary Summary
 	var aliases map[string]string
 	var err error
-	if desktop {
+	if prepared != nil {
+		summary, aliases = prepared.preview.Summary, prepared.aliases
+	} else if desktop {
 		summary, aliases, err = BuildDesktopSummary(ctx, s.store, seconds, include, s.now(), s.targets())
 	} else {
 		summary, aliases, err = BuildSummary(ctx, s.store, minutes, include, s.now(), strings.TrimSpace(s.target()))
@@ -377,10 +514,15 @@ func (s *Service) run(ctx context.Context, id string, seconds, minutes int, incl
 		s.finish(id, "error", "summary_failed", "无法构建本地诊断摘要", "")
 		return
 	}
-	wire, err := json.Marshal(summary)
-	if err != nil {
-		s.finish(id, "error", "summary_failed", "无法构建本地诊断摘要", "")
-		return
+	var wire []byte
+	if prepared != nil {
+		wire = []byte(prepared.WireJSON())
+	} else {
+		wire, err = json.Marshal(summary)
+		if err != nil {
+			s.finish(id, "error", "summary_failed", "无法构建本地诊断摘要", "")
+			return
+		}
 	}
 	if len(wire) > 24<<10 {
 		s.finish(id, "error", "summary_too_large", "诊断摘要超过发送上限", "")
@@ -395,17 +537,20 @@ func (s *Service) run(ctx context.Context, id string, seconds, minutes int, incl
 			return
 		}
 		system = DesktopSystemPrompt
+		if prepared != nil {
+			system = desktopPrompt(prepared.language)
+		}
 		user = PresetUserMessage(p.Task, wire)
 		preset = p.ID
 	}
-	raw, err := s.client.Chat(ctx, key, model, system, user)
+	raw, err := client.Chat(ctx, key, model, system, user)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			s.finish(id, "canceled", "canceled", "诊断已取消", "")
 			return
 		}
 		code := CodeOf(err)
-		msg := "DeepSeek 请求失败"
+		msg := "模型请求失败"
 		var api *APIError
 		if errors.As(err, &api) {
 			msg = api.Message
@@ -427,7 +572,8 @@ func (s *Service) run(ctx context.Context, id string, seconds, minutes int, incl
 		DurationMS:          s.now().Sub(start).Milliseconds(),
 	}, summary.DataGaps)
 	if err != nil {
-		s.finish(id, "error", "deepseek_invalid_response", ErrInvalid.Message, "")
+		invalid := client.providerError(ErrInvalid)
+		s.finish(id, "error", CodeOf(invalid), invalid.Error(), "")
 		return
 	}
 	reportJSON, err := MarshalReport(report)

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -45,5 +46,27 @@ func TestDPAPIRoundTripAndNoPlaintext(t *testing.T) {
 	}
 	if err := s.Clear(); err != nil {
 		t.Fatalf("idempotent clear: %v", err)
+	}
+}
+
+func TestCiphertextCannotMoveBetweenEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	a := ForEndpoint(dir, "responses\nhttps://example.invalid/v1")
+	b := ForEndpoint(dir, "responses\nhttps://example.invalid/other")
+	if err := a.Set("synthetic-key-no-vendor"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(a.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(b.Path()) != filepath.Dir(a.Path()) || a.Path() == b.Path() {
+		t.Fatal("incorrect scope for scoped credential paths")
+	}
+	if err := os.WriteFile(b.Path(), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Get(); err == nil {
+		t.Fatal("mismatched endpoint decrypted another endpoint's ciphertext")
 	}
 }

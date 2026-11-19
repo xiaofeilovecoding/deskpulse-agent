@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	DefaultModel = "deepseek-flash"
+	DefaultModel    = "deepseek-flash"
+	AppearanceLight = "light"
+	AppearanceDark  = "dark"
 	// DefaultAIWindowSeconds is the v0.2 one-click diagnosis window.
 	DefaultAIWindowSeconds = 30
 	// MaxRTTTargets is the v0.2 product limit.
@@ -39,10 +41,13 @@ type Settings struct {
 	RTTTarget       string         `json:"rtt_target,omitempty"`
 	AIWindowSeconds int            `json:"ai_window_seconds"`
 	DeepSeekModel   string         `json:"deepseek_model"`
+	AI              *ModelProfile  `json:"ai,omitempty"`
+	RecoveryFolder  string         `json:"recovery_folder,omitempty"`
 	BallPosition    WindowPosition `json:"ball_position"`
 	HiddenMetrics   MetricMask     `json:"hidden_metrics,omitempty"`
 	DisabledMetrics MetricMask     `json:"disabled_metrics,omitempty"`
 	Language        string         `json:"language,omitempty"`
+	Appearance      string         `json:"appearance,omitempty"`
 }
 
 type MetricMask uint8
@@ -52,6 +57,7 @@ const (
 	Memory
 	Disk
 	Latency
+	GPU
 )
 
 // Store is a small concurrency-safe settings file store.
@@ -67,6 +73,7 @@ func Default() Settings {
 		SchemaVersion:   2,
 		AIWindowSeconds: DefaultAIWindowSeconds,
 		DeepSeekModel:   DefaultModel,
+		Appearance:      AppearanceLight,
 	}
 }
 
@@ -92,10 +99,13 @@ func Load(path string) (*Store, error) {
 		RTTTarget       string         `json:"rtt_target"`
 		AIWindowSeconds int            `json:"ai_window_seconds"`
 		DeepSeekModel   string         `json:"deepseek_model"`
+		AI              *ModelProfile  `json:"ai"`
+		RecoveryFolder  string         `json:"recovery_folder"`
 		BallPosition    WindowPosition `json:"ball_position"`
 		HiddenMetrics   MetricMask     `json:"hidden_metrics"`
 		DisabledMetrics MetricMask     `json:"disabled_metrics"`
 		Language        string         `json:"language"`
+		Appearance      string         `json:"appearance"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse settings: %w", err)
@@ -105,10 +115,13 @@ func Load(path string) (*Store, error) {
 		RTTTarget:       strings.TrimSpace(raw.RTTTarget),
 		AIWindowSeconds: raw.AIWindowSeconds,
 		DeepSeekModel:   strings.TrimSpace(raw.DeepSeekModel),
+		AI:              raw.AI,
+		RecoveryFolder:  strings.TrimSpace(raw.RecoveryFolder),
 		BallPosition:    raw.BallPosition,
 		HiddenMetrics:   raw.HiddenMetrics,
 		DisabledMetrics: raw.DisabledMetrics,
 		Language:        raw.Language,
+		Appearance:      normalizeAppearance(raw.Appearance),
 	}
 	if v.SchemaVersion == 0 {
 		v.SchemaVersion = 1
@@ -130,6 +143,9 @@ func Load(path string) (*Store, error) {
 	if err := ValidateModel(v.DeepSeekModel); err != nil {
 		return nil, fmt.Errorf("settings: %w", err)
 	}
+	if err := v.normalizeAI(); err != nil {
+		return nil, fmt.Errorf("settings: %w", err)
+	}
 	if v.AIWindowSeconds == 0 {
 		v.AIWindowSeconds = DefaultAIWindowSeconds
 	}
@@ -137,6 +153,9 @@ func Load(path string) (*Store, error) {
 		return nil, fmt.Errorf("settings: %w", err)
 	}
 	v.SchemaVersion = 2
+	if err := ValidateRecoveryFolder(v.RecoveryFolder); err != nil {
+		return nil, err
+	}
 	if len(v.RTTTargets) > 0 {
 		v.RTTTarget = v.RTTTargets[0]
 	} else {
@@ -153,6 +172,12 @@ func (s *Store) Get() Settings {
 	return clone(s.val)
 }
 
+func (s *Store) Language() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.val.Language
+}
+
 // Save validates and atomically replaces the file. An empty target list is
 // valid and remains empty (the UI shows "待配置").
 func (s *Store) Save(v Settings) error {
@@ -165,11 +190,19 @@ func (s *Store) Save(v Settings) error {
 	}
 	v.SchemaVersion = 2
 	v.RTTTargets = targets
+	v.Appearance = normalizeAppearance(v.Appearance)
+	v.RecoveryFolder = strings.TrimSpace(v.RecoveryFolder)
+	if err := ValidateRecoveryFolder(v.RecoveryFolder); err != nil {
+		return err
+	}
 	v.DeepSeekModel = strings.TrimSpace(v.DeepSeekModel)
 	if v.DeepSeekModel == "" {
 		v.DeepSeekModel = DefaultModel
 	}
 	if err := ValidateModel(v.DeepSeekModel); err != nil {
+		return err
+	}
+	if err := v.normalizeAI(); err != nil {
 		return err
 	}
 	if v.AIWindowSeconds == 0 {
@@ -192,20 +225,19 @@ func (s *Store) Save(v Settings) error {
 	return nil
 }
 
-// ValidateModel restricts the model name to the characters used by DeepSeek's
-// public model identifiers.
+// ValidateModel accepts simple model names and namespaced router identifiers.
 func ValidateModel(model string) error {
 	if model == "" {
 		return errors.New("模型名称不能为空")
 	}
-	if len(model) > 64 {
+	if len(model) > 128 {
 		return errors.New("模型名称过长")
 	}
 	for _, r := range model {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("-_./:", r) {
 			continue
 		}
-		return errors.New("模型名称只能包含字母、数字、点、减号和下划线")
+		return errors.New("模型名称含不支持的字符")
 	}
 	return nil
 }
@@ -320,7 +352,53 @@ func MoveTarget(items []string, from, to int) []string {
 
 func clone(v Settings) Settings {
 	v.RTTTargets = append([]string(nil), v.RTTTargets...)
+	if v.AI != nil {
+		profile := *v.AI
+		v.AI = &profile
+	}
 	return v
+}
+
+func normalizeAppearance(value string) string {
+	if value == AppearanceDark {
+		return AppearanceDark
+	}
+	return AppearanceLight
+}
+
+func ValidateRecoveryFolder(folder string) error {
+	if folder == "" {
+		return nil
+	}
+	if !filepath.IsAbs(folder) || len(folder) > 1024 || strings.HasPrefix(folder, `\\`) ||
+		strings.ContainsAny(folder, "\x00\r\n") {
+		return errors.New("恢复目录须为本机绝对路径")
+	}
+	return nil
+}
+
+func (v *Settings) normalizeAI() error {
+	if v.AI == nil {
+		return nil
+	}
+	profile, err := v.AI.Normalize()
+	if err != nil {
+		return err
+	}
+	v.AI = &profile
+	if profile.Provider == DeepSeek && profile.BaseURL == DeepSeek.DefaultURL() {
+		v.DeepSeekModel = profile.Model
+	}
+	return nil
+}
+
+// ModelProfile returns a normalized profile. Older files retain their
+// original DeepSeek model and existing DPAPI key.
+func (v Settings) ModelProfile() ModelProfile {
+	if v.AI != nil {
+		return *v.AI
+	}
+	return ModelProfile{Provider: DeepSeek, BaseURL: DeepSeek.DefaultURL(), Model: v.DeepSeekModel}
 }
 
 func writeAtomic(path string, v Settings) error {

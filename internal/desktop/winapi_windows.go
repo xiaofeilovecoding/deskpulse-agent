@@ -14,6 +14,9 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	msimg32  = syscall.NewLazyDLL("msimg32.dll")
+	comctl32 = syscall.NewLazyDLL("comctl32.dll")
+
+	procInitCommonControls = comctl32.NewProc("InitCommonControls")
 
 	procRegisterClassExW       = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW        = user32.NewProc("CreateWindowExW")
@@ -82,6 +85,9 @@ var (
 	procCreatePen              = gdi32.NewProc("CreatePen")
 	procSelectObject           = gdi32.NewProc("SelectObject")
 	procDeleteObject           = gdi32.NewProc("DeleteObject")
+	procSaveDC                 = gdi32.NewProc("SaveDC")
+	procRestoreDC              = gdi32.NewProc("RestoreDC")
+	procIntersectClipRect      = gdi32.NewProc("IntersectClipRect")
 	procCreateFontW            = gdi32.NewProc("CreateFontW")
 	procShellNotifyIconW       = shell32.NewProc("Shell_NotifyIconW")
 	procGetModuleHandleW       = kernel32.NewProc("GetModuleHandleW")
@@ -143,6 +149,7 @@ const (
 	wmAppShow         = wmApp + 1
 	wmAppTray         = wmApp + 2
 	wmAppPulse        = wmApp + 12
+	wmAppCache        = wmApp + 13
 	wmSetFont         = 0x0030
 	wmSetTextRaw      = 0x000C
 	emSetSel          = 0x00B1

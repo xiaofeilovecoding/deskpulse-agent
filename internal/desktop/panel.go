@@ -5,6 +5,7 @@ package desktop
 import (
 	"fmt"
 
+	"github.com/xiaofeilovecoding/deskpulse-agent/internal/settings"
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/winmetrics"
 )
 
@@ -100,6 +101,7 @@ func (a *App) openPopup() {
 		return
 	}
 	a.hideHover()
+	a.requestGPU(true)
 	a.applyPopupFrame()
 	a.popupScroll = 0
 	a.panelFocus = -1
@@ -120,6 +122,7 @@ func (a *App) openPopup() {
 		procSetForegroundWindow.Call(a.panel)
 		setFocus(a.panel)
 	}
+	setTimer(a.panel, timerPopupTick, 1000)
 }
 
 // animAllowed honors the system reduce-animation setting and remote sessions.
@@ -165,6 +168,7 @@ func (a *App) closePopup() {
 	killTimer(a.panel, timerPopupAnim)
 	killTimer(a.panel, timerPopupTick)
 	showWindow(a.panel, swHide)
+	a.requestGPU(a.hoverShown)
 }
 
 func (a *App) togglePopup() {
@@ -344,6 +348,12 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 	nameR := shift(l.Title)
 	nameR.Left += scale(30, dpi)
 	drawText(b.hdc, "DeskPulse Agent", nameR, f.Title, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	if snap.GPU != nil && a.cfg.Get().DisabledMetrics&settings.GPU == 0 && !stale {
+		gpu := nameR
+		gpu.Left += scale(145, dpi)
+		gpu.Right = shift(l.Gear).Left - scale(6, dpi)
+		drawText(b.hdc, "GPU "+fmtPercentInt(snap.GPU), gpu, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
+	}
 	gearFocus := a.popupFocusRect(paSettings, l)
 	drawIcon(b.hdc, "settings", t.muted(), iconRect(shift(l.Gear), scale(18, dpi)))
 	if gearFocus {
@@ -356,9 +366,9 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 		color uint32
 	}{
 		{"CPU", fmtPercentInt(snap.CPU), t.text()},
-		{"内存", "—", t.text()},
+		{a.tr("内存", "Memory"), "—", t.text()},
 		{"", "", t.text()},
-		{"延迟", fmtLatency(snap, targets), t.status(firstRTTState(snap, targets))},
+		{a.tr("延迟", "Latency"), fmtLatency(snap, targets), t.status(firstRTTState(snap, targets))},
 	}
 	if snap.Memory != nil {
 		values[1].text = fmt.Sprintf("%.0f%%", snap.Memory.Percent)
@@ -385,7 +395,7 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 		if (stale && i != 3) || (i == 3 && latencyStale(snap, targets, nowMS)) {
 			hr := vr
 			hr.Right -= int32(valueW) + scale(6, dpi)
-			drawText(b.hdc, "上次值", hr, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
+			drawText(b.hdc, a.tr("上次值", "Last value"), hr, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
 		}
 		if i < len(values)-1 {
 			line := rect{r.Left, r.Bottom, r.Right, r.Bottom + 1}
@@ -434,11 +444,8 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 	btn := shift(l.AnalyzeBtn)
 	btnFocus := a.popupFocusRect(paAnalyze, l)
 	fill := t.accent()
-	if btnFocus {
-		fill = t.accent()
-	}
 	roundRect(b.hdc, btn, scale(8, dpi), fill, fill)
-	drawText(b.hdc, "AI 分析", btn, f.Body, t.accentText(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+	drawActionLabel(b.hdc, btn, a.tr("AI 分析", "AI diagnosis"), "sparkle", f.Body, t.accentText(), dpi)
 	if btnFocus {
 		inner := rect{btn.Left - 2, btn.Top - 2, btn.Right + 2, btn.Bottom + 2}
 		frame := rect{inner.Left - 1, inner.Top - 1, inner.Right, inner.Top}
@@ -453,7 +460,8 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 
 	// Secondary action: 查看进程 with the chevron after the text.
 	link := shift(l.ProcessLink)
-	textW, _ := measureText(b.hdc, "查看进程", f.Body)
+	linkCaption := a.tr("查看进程", "View processes")
+	textW, _ := measureText(b.hdc, linkCaption, f.Body)
 	iconW := scale(12, dpi)
 	total := int32(textW) + scale(6, dpi) + iconW
 	cx := (link.Left + link.Right) / 2
@@ -465,7 +473,7 @@ func (a *App) paintPopupInto(b *windowBuffer) {
 		color = t.text()
 	}
 	drawIcon(b.hdc, "chevron-right", color, l.LinkIcon)
-	drawText(b.hdc, "查看进程", l.LinkText, f.Body, color, dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	drawText(b.hdc, linkCaption, l.LinkText, f.Body, color, dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
 	if linkFocus {
 		a.focusBorder(b, rect{cx - total/2 - scale(6, dpi), link.Top, cx + total/2 + scale(6, dpi), link.Bottom}, dpi)
 	}

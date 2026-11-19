@@ -81,16 +81,16 @@ type App struct {
 	fonts      map[uint32]*fontSet
 	captureDPI uint32
 
-	ball       uintptr
-	hover      uintptr
-	panel      uintptr
-	procUI     uintptr
-	analysisUI uintptr
-	settingsUI uintptr
-	historyUI  uintptr
-	trayAdded  bool
-	taskbarMsg uint32
-	darkBrush  uintptr
+	ball         uintptr
+	hover        uintptr
+	panel        uintptr
+	procUI       uintptr
+	analysisUI   uintptr
+	settingsUI   uintptr
+	historyUI    uintptr
+	trayAdded    bool
+	taskbarMsg   uint32
+	surfaceBrush uintptr
 
 	ballDPI      uint32
 	ballSize     int32
@@ -101,6 +101,7 @@ type App struct {
 	hoverShown   bool
 	hoverStep    int
 	hoverMask    settings.MetricMask
+	hoverGPU     bool
 	attention    bool
 
 	panelDPI      uint32
@@ -124,45 +125,65 @@ type App struct {
 	procRebuilds    int
 	procRepaints    int
 
-	aiState       aiViewState
-	aiPreset      string
-	aiSeconds     int
-	aiFocus       int
-	aiScroll      int32
-	aiWheelRem    int
-	aiLines       []resultLine
-	aiLinesDPI    uint32
-	aiCompletedID string
-	aiPollFails   int
+	aiState            aiViewState
+	aiPreset           string
+	aiSeconds          int
+	aiFocus            int
+	aiScroll           int32
+	aiWheelRem         int
+	aiLines            []resultLine
+	aiLinesDPI         uint32
+	aiLinesWidth       int32
+	aiCompletedID      string
+	aiPollFails        int
+	aiEvidenceExpanded bool
+	aiEvidenceHit      rect
 
-	settingsTab       int
-	settingsDPI       uint32
-	settingsTargets   []string
-	settingsTestText  string
-	settingsTestOK    bool
-	settingsSecErr    string
-	settingsTargetErr string
-	settingsKeyErr    string
-	settingsKey       uintptr
-	settingsSeconds   uintptr
-	settingsList      uintptr
-	settingsTarget    uintptr
-	settingsTest      uintptr
-	settingsClear     uintptr
-	settingsAdd       uintptr
-	settingsDelete    uintptr
-	settingsPrimary   uintptr
-	settingsSave      uintptr
-	settingsCancel    uintptr
+	settingsTab           int
+	settingsTabButtons    [len(settingsTabs)]uintptr
+	settingsDPI           uint32
+	settingsTargets       []string
+	settingsTestText      string
+	settingsTestOK        bool
+	settingsSecErr        string
+	settingsTargetErr     string
+	settingsKeyErr        string
+	settingsKey           uintptr
+	settingsProvider      uintptr
+	settingsProtocol      settings.ModelProvider
+	settingsEndpoint      uintptr
+	settingsModel         uintptr
+	settingsRecovery      uintptr
+	settingsAppearance    uintptr
+	settingsClose         uintptr
+	settingsTips          uintptr
+	settingsKeyScope      string
+	settingsDraftRevision uint64
+	settingsInputFrames   map[uintptr]rect
+	settingsSeconds       uintptr
+	settingsList          uintptr
+	settingsTarget        uintptr
+	settingsTest          uintptr
+	settingsClear         uintptr
+	settingsAdd           uintptr
+	settingsDelete        uintptr
+	settingsPrimary       uintptr
+	settingsSave          uintptr
+	settingsCancel        uintptr
 
 	historyList   uintptr
 	historyStatus uintptr
 	historyItems  []store.Diagnosis
+	cacheBusy     bool
+	cacheMu       sync.Mutex
+	cacheResult   string
+	cacheError    string
 
-	testMu     sync.Mutex
-	testBusy   bool
-	testResult string
-	testOK     bool
+	testMu       sync.Mutex
+	testBusy     bool
+	testResult   string
+	testOK       bool
+	testRevision uint64
 
 	closeOnce sync.Once
 	closed    bool
@@ -174,12 +195,15 @@ func Run(opts Options) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	initDesktop()
-	already, err := ensureSingleInstance()
-	if err != nil {
-		return err
-	}
-	if already {
-		return nil
+	if opts.CaptureDir != "" {
+		if !opts.Synthetic || opts.DataDir == "" {
+			return fmt.Errorf("界面采样仅允许合成模式与指定的独立数据目录")
+		}
+	} else {
+		already, err := ensureSingleInstance()
+		if err != nil || already {
+			return err
+		}
 	}
 	a, err := newApp(opts)
 	if err != nil {
@@ -200,7 +224,7 @@ func Run(opts Options) error {
 	if err := a.addTray(); err != nil {
 		a.logger.Warn("tray icon add failed", "error", err.Error())
 	}
-	a.logger.Info("cloudscope desktop started", "version", a.version, "data_dir", a.dataDir)
+	a.logger.Info("DeskPulse desktop started", "version", a.version)
 	if err := a.messageLoop(); err != nil {
 		a.logger.Error("message loop failed", "error", err.Error())
 		a.shutdown()
@@ -256,13 +280,18 @@ func newApp(opts Options) (*App, error) {
 		logW.Close()
 		return nil, err
 	}
-	// v0.3 resolves the DeepSeek key at startup and before every analysis:
-	// session > DPAPI > process environment > Windows user environment
-	// (HKCU\Environment). The value never enters logs or prompts.
+	var profile func() settings.ModelProfile
+	if opts.BaseURL == "" {
+		profile = func() settings.ModelProfile { return cfg.Get().ModelProfile() }
+	}
 	diag := diagnose.New(diagnose.Options{
-		Store:      st,
-		BaseURL:    baseURL,
-		Model:      func() string { return cfg.Get().DeepSeekModel },
+		Store:   st,
+		BaseURL: baseURL,
+		Model:   func() string { return cfg.Get().DeepSeekModel },
+		Profile: profile,
+		Credentials: func(p settings.ModelProfile) diagnose.KeyStorage {
+			return credential.ForEndpoint(dir, p.CredentialScope())
+		},
 		EnvKey:     func() string { return "" },
 		Target:     func() string { return firstTarget(cfg.Get().RTTTargets) },
 		Targets:    func() []string { return append([]string(nil), cfg.Get().RTTTargets...) },
@@ -282,7 +311,8 @@ func newApp(opts Options) (*App, error) {
 		logW.Close()
 		return nil, err
 	}
-	brush, _, _ := procCreateSolidBrush.Call(uintptr(rgb(0x1C, 0x24, 0x30)))
+	theme := uiTheme{Dark: cfg.Get().Appearance == settings.AppearanceDark, HighContrast: highContrastOn()}
+	brush, _, _ := procCreateSolidBrush.Call(uintptr(theme.panel()))
 	taskbarName, _ := syscall.UTF16PtrFromString("TaskbarCreated")
 	taskbar, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(taskbarName)))
 
@@ -301,9 +331,9 @@ func newApp(opts Options) (*App, error) {
 		ctx:          ctx,
 		cancel:       cancel,
 		instance:     instance,
-		darkBrush:    brush,
+		surfaceBrush: brush,
 		taskbarMsg:   uint32(taskbar),
-		theme:        uiTheme{HighContrast: highContrastOn()},
+		theme:        theme,
 		buffers:      make(map[uintptr]*windowBuffer),
 		fonts:        make(map[uint32]*fontSet),
 		procExpanded: make(map[procKey]bool),
@@ -325,7 +355,7 @@ func newApp(opts Options) (*App, error) {
 		a.sampler = nil
 		a.source = newSyntheticSource()
 	}
-	a.aiState = aiViewState{kind: aiIdle, preset: a.aiPreset, seconds: a.aiSeconds, status: "尚未分析"}
+	a.aiState = aiViewState{kind: aiIdle, preset: a.aiPreset, seconds: a.aiSeconds, status: a.tr("尚未分析", "Ready to diagnose")}
 	return a, nil
 }
 
@@ -349,6 +379,12 @@ func (a *App) startServices() {
 		a.services.Go(a.recordIncidents)
 	}
 	a.services.Go(a.maintenance)
+}
+
+func (a *App) requestGPU(visible bool) {
+	if a.sampler != nil {
+		a.sampler.SetGPUVisible(visible)
+	}
 }
 
 func (a *App) recordIncidents() {
@@ -450,6 +486,7 @@ func (a *App) shutdown() {
 		}
 		a.diag.StopAll()
 		a.removeTray()
+		destroyWindow(a.settingsTips)
 		destroyWindow(a.settingsUI)
 		destroyWindow(a.historyUI)
 		destroyWindow(a.analysisUI)
@@ -457,8 +494,8 @@ func (a *App) shutdown() {
 		destroyWindow(a.panel)
 		destroyWindow(a.hover)
 		destroyWindow(a.ball)
-		if a.darkBrush != 0 {
-			procDeleteObject.Call(a.darkBrush)
+		if a.surfaceBrush != 0 {
+			procDeleteObject.Call(a.surfaceBrush)
 		}
 		a.releaseBuffers()
 		for _, f := range a.fonts {

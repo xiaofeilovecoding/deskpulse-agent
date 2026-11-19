@@ -91,6 +91,8 @@ type RTTTarget struct {
 type Snapshot struct {
 	TS           int64         `json:"ts"`
 	CPU          *float64      `json:"cpu_percent"`
+	GPU          *float64      `json:"-"`
+	GPUAvailable bool          `json:"-"`
 	Memory       *Memory       `json:"memory"`
 	Disk         DiskRate      `json:"disk"`
 	Processes    []ProcessInfo `json:"processes"`
@@ -213,6 +215,10 @@ func cloneSnapshot(s Snapshot) Snapshot {
 	if s.CPU != nil {
 		v := *s.CPU
 		s.CPU = &v
+	}
+	if s.GPU != nil {
+		v := *s.GPU
+		s.GPU = &v
 	}
 	return s
 }

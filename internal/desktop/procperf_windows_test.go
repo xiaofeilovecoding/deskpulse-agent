@@ -33,8 +33,9 @@ func TestProcPagePerf500Rows(t *testing.T) {
 	defer runtime.UnlockOSThread()
 	initDesktop()
 	if err := registerClass(moduleHandle()); err != nil {
-		t.Log("class already registered:", err)
+		t.Fatal(err)
 	}
+	defer unregisterDesktopTestClass(t)
 
 	ts := time.Now().UnixMilli()
 	base := perfTree(500, ts)

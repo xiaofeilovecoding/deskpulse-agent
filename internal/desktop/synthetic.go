@@ -30,16 +30,17 @@ func newSyntheticSource() *syntheticSource {
 	return &syntheticSource{snap: buildSyntheticSnapshot()}
 }
 
-// buildSyntheticSnapshot mirrors the numbers in docs/cloudscope/desktop-v0.3
-// -design.png so captured pages can be compared against the design.
+// buildSyntheticSnapshot supplies stable synthetic readings and process names
+// so captures can be compared across themes, languages and display scales.
 func buildSyntheticSnapshot() winmetrics.Snapshot {
 	now := time.Now().UnixMilli()
 	cpu := 24.0
 	read, write := 2.4e6, 0.8e6
+	gpu := 47.0
 	rttAvg, rttMax := 19.0, 23.0
 	loss := 0.0
 
-	// Microsoft Edge: 18 children; the two named rows match the design.
+	// Microsoft Edge has 18 child processes with two larger consumers.
 	var edgeKids []*winmetrics.Node
 	mkNode := func(name string, pid int32, ppid int32, cpu, ws float64) *winmetrics.Node {
 		return &winmetrics.Node{
@@ -50,8 +51,8 @@ func buildSyntheticSnapshot() winmetrics.Snapshot {
 		}
 	}
 	edgeKids = append(edgeKids,
-		mkNode("浏览器进程", 1001, 1000, 9, 405e6),
-		mkNode("渲染进程", 1002, 1000, 6, 538e6),
+		mkNode("msedge.exe", 1001, 1000, 9, 405e6),
+		mkNode("msedge.exe", 1002, 1000, 6, 538e6),
 	)
 	edgeRestCPU := 18.0 - 9 - 6
 	edgeRestWS := 1.2e9 - 405e6 - 538e6
@@ -80,27 +81,28 @@ func buildSyntheticSnapshot() winmetrics.Snapshot {
 
 	explorerCPU := 3.0
 	explorerWS := 208e6
-	explorer := mkNode("Windows 资源管理器", 500, 0, explorerCPU, explorerWS)
-	csCPU := 0.4
-	csWS := 30e6
-	cloudscope := mkNode("DeskPulse Agent", 900, 0, csCPU, csWS)
+	explorer := mkNode("explorer.exe", 500, 0, explorerCPU, explorerWS)
+	agent := mkNode("deskpulse-agent.exe", 900, 0, 0.4, 30e6)
 
 	tree := winmetrics.Tree{
-		Roots: []*winmetrics.Node{edge, explorer, teams, cloudscope},
-		Total: 1 + 18 + 1 + 6 + 1,
+		Roots: []*winmetrics.Node{edge, explorer, teams, agent},
 	}
+	processes := flattenTree(tree)
+	tree.Total = len(processes)
 	memUsed := 0.61 * 16e9
 	memTotal := 16e9
 	return winmetrics.Snapshot{
-		TS:     now,
-		CPU:    &cpu,
-		Memory: &winmetrics.Memory{Used: memUsed, Total: memTotal, Percent: 61, TS: now},
+		TS:           now,
+		CPU:          &cpu,
+		GPU:          &gpu,
+		GPUAvailable: true,
+		Memory:       &winmetrics.Memory{Used: memUsed, Total: memTotal, Percent: 61, TS: now},
 		Disk: winmetrics.DiskRate{
 			ReadBPS: &read, WriteBPS: &write, TS: now, State: winmetrics.StateOK,
 		},
 		ReadHistory:  []float64{.5e6, 1.2e6, .8e6, 2.0e6, 2.4e6},
 		WriteHistory: []float64{.2e6, .8e6, .4e6, 1.3e6, .8e6},
-		Processes:    flattenTree(tree),
+		Processes:    processes,
 		Tree:         tree,
 		RTT: []winmetrics.RTTTarget{{
 			Target: "www.baidu.com", Display: "百度", State: winmetrics.StateOK,
@@ -128,7 +130,7 @@ func flattenTree(tree winmetrics.Tree) []winmetrics.ProcessInfo {
 }
 
 // syntheticReport is the completed-report fixture for capture.
-func syntheticReport() *diagnose.Report {
+func (a *App) syntheticReport() *diagnose.Report {
 	cpuAvg, cpuPeak, procCPU := 76.0, 94.0, 52.0
 	return &diagnose.Report{
 		ID:            "capture0001",
@@ -136,20 +138,20 @@ func syntheticReport() *diagnose.Report {
 		CreatedAt:     time.Now().UnixMilli(),
 		WindowSeconds: 30,
 		Preset:        diagnose.PresetOverview,
-		Summary:       "CPU 是目前最可能的瓶颈",
+		Summary:       a.tr("CPU 是目前最可能的瓶颈。", "The CPU is the most likely bottleneck in this window."),
 		Findings: []diagnose.Finding{
-			{Cause: "CPU 持续高占用，平均 76%、峰值 94%", EvidenceIDs: []string{"cpu.avg", "cpu.peak", "proc.P01.cpu"}},
+			{Cause: a.tr("CPU 持续高占用，平均 76%，峰值 94%。", "CPU stayed busy throughout the window. The average was 76% and the peak was 94%."), EvidenceIDs: []string{"cpu.avg", "cpu.peak", "proc.P01.cpu"}},
 		},
-		NextSteps: []string{"查看高占用应用，再测一次。"},
-		DataGaps:  []string{"RTT 仅两条样本"},
+		NextSteps: []string{a.tr("查看高占用应用，再测一次。", "Open the process list and sample again during the slowdown.")},
+		DataGaps:  []string{a.tr("RTT 仅两条样本。", "Only two network samples were available.")},
 		Aliases: map[string]string{
 			"P01": "chrome.exe",
 			"R1":  "www.baidu.com",
 		},
 		Evidence: []diagnose.Evidence{
-			{ID: "cpu.avg", Label: "CPU 平均利用率", Value: cpuAvg, Unit: "percent"},
-			{ID: "cpu.peak", Label: "CPU 峰值利用率", Value: cpuPeak, Unit: "percent"},
-			{ID: "proc.P01.cpu", Label: "进程 P01 最大 CPU", Value: procCPU, Unit: "percent"},
+			{ID: "cpu.avg", Label: a.tr("CPU 平均利用率", "Average CPU use"), Value: cpuAvg, Unit: "percent"},
+			{ID: "cpu.peak", Label: a.tr("CPU 峰值利用率", "Peak CPU use"), Value: cpuPeak, Unit: "percent"},
+			{ID: "proc.P01.cpu", Label: a.tr("进程 P01 最大 CPU", "Process P01 peak CPU use"), Value: procCPU, Unit: "percent"},
 		},
 		DurationMS: 2600,
 	}
@@ -209,6 +211,13 @@ func (a *App) captureAt(dpi uint32) error {
 	if err := shoot(a.hover, "hover.png", a.paintHoverBuffer); err != nil {
 		return err
 	}
+	a.hoverGPU = true
+	moveWindow(a.hover, 0, 0, hw+scale(hoverMetricDIP, dpi), hh)
+	err := shoot(a.hover, "hover-gpu.png", a.paintHoverBuffer)
+	a.hoverGPU = false
+	if err != nil {
+		return err
+	}
 	pw, ph := size(popupWDIP, popupHDIP)
 	moveWindow(a.panel, 0, 0, pw, ph)
 	setRoundRegion(a.panel, pw, ph, scale(10, dpi))
@@ -255,6 +264,8 @@ func (a *App) captureAt(dpi uint32) error {
 		}
 	}
 	a.settingsDPI = dpi
+	sw, sh := size(settingsWDIP, settingsHDIP)
+	moveWindow(a.settingsUI, -32000, -32000, sw, sh)
 	a.layoutSettingsControls()
 	a.applyControlFonts()
 	a.settingsTargets = []string{"example.invalid", "192.0.2.1"}
@@ -262,8 +273,7 @@ func (a *App) captureAt(dpi uint32) error {
 	a.refreshSettingsList()
 	procSendMessageW.Call(a.settingsList, lbSetCurSel, ^uintptr(0), 0)
 	setText(a.settingsSeconds, "30")
-	sw, sh := size(settingsWDIP, settingsHDIP)
-	moveWindow(a.settingsUI, -32000, -32000, sw, sh)
+	a.loadSettingsProfile(a.cfg.Get().ModelProfile())
 	setRoundRegion(a.settingsUI, sw, sh, scale(10, dpi))
 	showWindow(a.settingsUI, swShowNoActivate)
 	a.settingsTab = tabDeepSeek
@@ -282,6 +292,11 @@ func (a *App) captureAt(dpi uint32) error {
 	if err := shootSettings("settings-network.png"); err != nil {
 		return err
 	}
+	a.settingsTab = tabRecovery
+	a.applySettingsTab()
+	if err := shootSettings("settings-recovery.png"); err != nil {
+		return err
+	}
 
 	// Analysis: success, running, failed and sampling states.
 	if a.analysisUI == 0 {
@@ -291,23 +306,41 @@ func (a *App) captureAt(dpi uint32) error {
 	}
 	resize(a.analysisUI, analysisWDIP, analysisHDIP)
 	setRoundRegion(a.analysisUI, scale(analysisWDIP, dpi), scale(analysisHDIP, dpi), scale(10, dpi))
-	report := syntheticReport()
-	a.aiState = aiViewState{kind: aiCompleted, status: "完成 · 综合诊断 · 最近 30 秒", report: report}
+	report := a.syntheticReport()
+	a.aiEvidenceExpanded = false
+	a.aiState = aiViewState{kind: aiCompleted, status: a.tr("完成 · 综合诊断 · 最近 30 秒", "Complete · Overview · Last 30 sec"), report: report}
 	a.aiCompletedID = report.ID
 	a.rebuildAnalysisLines(report)
 	if err := shoot(a.analysisUI, "analysis-success.png", a.paintAnalysisBuffer); err != nil {
 		return err
 	}
-	a.aiState = aiViewState{kind: aiRunning, status: "分析中 · 综合诊断 · 最近 30 秒"}
+	evidence := a.aiEvidenceHit
+	if evidence == (rect{}) {
+		return fmt.Errorf("evidence disclosure is outside the visible report")
+	}
+	a.handleAnalysisClick((evidence.Left+evidence.Right)/2, (evidence.Top+evidence.Bottom)/2)
+	if !a.aiEvidenceExpanded {
+		return fmt.Errorf("evidence did not expand")
+	}
+	if err := shoot(a.analysisUI, "analysis-details.png", a.paintAnalysisBuffer); err != nil {
+		return err
+	}
+	a.aiFocus = len(a.aiButtonsFor())
+	a.handleAnalysisKey(0x0D)
+	if a.aiEvidenceExpanded {
+		return fmt.Errorf("evidence did not collapse from the keyboard")
+	}
+	a.aiFocus = -1
+	a.aiState = aiViewState{kind: aiRunning, status: a.tr("分析中 · 综合诊断 · 最近 30 秒", "Diagnosing · Overview · Last 30 sec")}
 	a.aiLines = nil
 	if err := shoot(a.analysisUI, "analysis-running.png", a.paintAnalysisBuffer); err != nil {
 		return err
 	}
-	a.aiState = aiViewState{kind: aiFailed, status: "分析失败：DeepSeek 认证失败，请检查 API Key"}
+	a.aiState = aiViewState{kind: aiFailed, status: a.tr("模型认证失败，请检查 API Key", "Authentication failed. Check the key.")}
 	if err := shoot(a.analysisUI, "analysis-failed.png", a.paintAnalysisBuffer); err != nil {
 		return err
 	}
-	a.aiState = aiViewState{kind: aiSampling, status: "正在采样，稍后重试"}
+	a.aiState = aiViewState{kind: aiSampling, status: a.tr("正在采样，稍后重试", "Waiting for measurements")}
 	if err := shoot(a.analysisUI, "analysis-nosamples.png", a.paintAnalysisBuffer); err != nil {
 		return err
 	}
@@ -406,11 +439,12 @@ func childStyleVisible(hwnd uintptr) bool {
 }
 
 func (a *App) settingsChildren() []uintptr {
-	return []uintptr{
-		a.settingsKey, a.settingsSeconds, a.settingsList, a.settingsTarget,
+	return append([]uintptr{
+		a.settingsProvider, a.settingsEndpoint, a.settingsModel, a.settingsRecovery, a.settingsKey, a.settingsSeconds, a.settingsList, a.settingsTarget,
 		a.settingsTest, a.settingsClear, a.settingsAdd, a.settingsDelete,
 		a.settingsPrimary, a.settingsSave, a.settingsCancel,
-	}
+		a.settingsAppearance, a.settingsClose,
+	}, a.settingsTabButtons[:]...)
 }
 
 // saveBufferPNG preserves a layered surface's real alpha.

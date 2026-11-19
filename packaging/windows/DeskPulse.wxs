@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="DeskPulse Agent" Manufacturer="DeskPulse" Version="$(var.ProductVersion)"
+           UpgradeCode="{103CD602-4E65-473E-B29D-19B2BC3EC53F}" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A later DeskPulse Agent version is installed."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+    <Launch Condition="Installed OR VersionNT64" Message="DeskPulse Agent requires 64-bit Windows." />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="DeskPulseProgramDir" Name="DeskPulse Agent Program">
+        <Component Id="Agent" Guid="{3643AEC8-BC4E-408E-9890-7B5FAD6F0BC3}">
+          <File Id="DeskPulseExe" Name="deskpulse-agent.exe" Source="$(var.AgentExecutable)" />
+          <Shortcut Id="DeskPulseStartMenu" Directory="ProgramMenuFolder" Name="DeskPulse Agent"
+                    Target="[#DeskPulseExe]" WorkingDirectory="DeskPulseProgramDir" />
+          <RegistryValue Root="HKCU" Key="Software\DeskPulse\Agent\Installer" Name="InstalledPath"
+                         Type="string" Value="[DeskPulseProgramDir]" KeyPath="yes" />
+          <RemoveFolder Id="RemoveProgramDirectory" Directory="DeskPulseProgramDir" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Desktop" Title="DeskPulse Agent">
+      <ComponentRef Id="Agent" />
+    </Feature>
+  </Package>
+</Wix>

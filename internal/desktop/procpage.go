@@ -65,7 +65,7 @@ func (a *App) createProcPage() (uintptr, error) {
 	w, h := scale(procWDIP, dpi), scale(procHDIP, dpi)
 	hwnd, err := createWindow(
 		wsExToolWindow|wsExTopmost,
-		"DeskPulse Agent 进程",
+		a.tr("DeskPulse Agent 进程", "DeskPulse Agent processes"),
 		wsPopup,
 		0, 0, w, h,
 		0, 0, a.instance, 0,
@@ -556,7 +556,7 @@ func (a *App) paintProcPageInto(b *windowBuffer) {
 
 	// Title + close button.
 	titleR := rect{m, scale(12, dpi), b.w - m, scale(12, dpi) + scale(procTitleH-12, dpi)}
-	drawText(b.hdc, "进程", titleR, f.TitleCJK, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	drawText(b.hdc, a.tr("进程", "Processes"), titleR, f.TitleCJK, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
 	closeBox := rect{b.w - m - scale(28, dpi), scale(12, dpi), b.w - m, scale(12, dpi) + scale(28, dpi)}
 	drawIcon(b.hdc, "dismiss", t.muted(), iconRect(closeBox, scale(16, dpi)))
 	if a.procCloseFocus() {
@@ -570,24 +570,22 @@ func (a *App) paintProcPageInto(b *windowBuffer) {
 	memLeft := memRight - scale(procMemColW, dpi)
 	cpuRight := memLeft - scale(8, dpi)
 	cpuLeft := cpuRight - scale(procCPUColW, dpi)
-	drawText(b.hdc, "进程名称", rect{header.Left, header.Top, header.Right, header.Bottom}, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
-	cpuColor, memColor := t.muted(), t.muted()
-	if a.procSortBy == "mem" {
-		memColor = t.text()
-	} else {
-		cpuColor = t.text()
+	drawText(b.hdc, a.tr("进程名称", "Process name"), rect{header.Left, header.Top, header.Right, header.Bottom}, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	drawHeader := func(label string, left, right int32, active bool) {
+		color := t.muted()
+		if active {
+			color = t.text()
+			textWidth, _ := measureText(b.hdc, label, f.Small)
+			stop := right - textWidth - scale(4, dpi)
+			icon := rect{stop - scale(11, dpi), header.Top, stop, header.Bottom}
+			if icon.Left >= left {
+				drawIcon(b.hdc, "chevron-down", t.muted(), iconRect(icon, scale(10, dpi)))
+			}
+		}
+		drawText(b.hdc, label, rect{left, header.Top, right, header.Bottom}, f.Small, color, dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
-	drawText(b.hdc, "CPU", rect{cpuLeft, header.Top, cpuRight, header.Bottom}, f.Small, cpuColor, dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
-	drawText(b.hdc, "内存", rect{memLeft, header.Top, memRight, header.Bottom}, f.Small, memColor, dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
-	if a.procSortBy == "cpu" || a.procSortBy == "" {
-		arrow := rect{cpuRight + scale(2, dpi), header.Top + (header.Bottom-header.Top-scale(10, dpi))/2, cpuRight + scale(2, dpi) + scale(10, dpi), 0}
-		arrow.Bottom = arrow.Top + scale(10, dpi)
-		drawIcon(b.hdc, "chevron-down", t.muted(), arrow)
-	} else {
-		arrow := rect{memRight + scale(2, dpi), header.Top + (header.Bottom-header.Top-scale(10, dpi))/2, memRight + scale(2, dpi) + scale(10, dpi), 0}
-		arrow.Bottom = arrow.Top + scale(10, dpi)
-		drawIcon(b.hdc, "chevron-down", t.muted(), arrow)
-	}
+	drawHeader("CPU", cpuLeft, cpuRight, a.procSortBy != "mem")
+	drawHeader(a.tr("内存", "Memory"), memLeft, memRight, a.procSortBy == "mem")
 	hdrFocus := a.procHeaderFocusRect(b, header)
 	if a.procFocus == int(phSortCPU) || a.procFocus == int(phSortMem) {
 		a.focusBorder(b, hdrFocus, dpi)
@@ -603,9 +601,9 @@ func (a *App) paintProcPageInto(b *windowBuffer) {
 		visible = 1
 	}
 	if a.procModel == nil || len(a.procModel.Rows) == 0 {
-		text := "等待进程快照"
+		text := a.tr("等待进程快照", "Waiting for a process snapshot")
 		if a.procModel != nil {
-			text = "暂无进程数据"
+			text = a.tr("暂无进程数据", "No process data available")
 		}
 		drawText(b.hdc, text, rect{m, areaTop, b.w - m, areaBottom}, f.Body, t.muted(), dtLeft|dtCenter|dtSingleLine|dtNoPrefix)
 	} else {
@@ -642,7 +640,9 @@ func (a *App) paintProcPageInto(b *windowBuffer) {
 			nameX := rr.Left + indentPx + scale(20, dpi)
 			name := row.Name
 			if row.HasKids {
-				name = fmt.Sprintf("%s · %d 个子进程", row.Name, row.Children)
+				name = fmt.Sprintf(a.tr("%s · %d 个子进程", "%s · %d children"), row.Name, row.Children)
+			} else if row.Depth > 0 {
+				name = fmt.Sprintf("%s · %d", row.Name, row.Key.PID)
 			}
 			nameR := rect{nameX, rr.Top, cpuLeft - scale(8, dpi), rr.Bottom}
 			drawText(b.hdc, name, nameR, f.Body, t.text(), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
@@ -674,7 +674,7 @@ func (a *App) paintProcPageInto(b *windowBuffer) {
 	}
 
 	footer := rect{m, b.h - scale(26, dpi), b.w - m, b.h - scale(8, dpi)}
-	drawText(b.hdc, "Windows 当前用户权限内的进程", footer, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	drawText(b.hdc, a.tr("Windows 当前用户权限内的进程", "Processes visible to the active Windows user"), footer, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
 }
 
 func (a *App) procCloseFocus() bool { return false }

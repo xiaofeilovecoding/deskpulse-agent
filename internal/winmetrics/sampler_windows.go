@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/ingest"
@@ -28,14 +29,16 @@ type Options struct {
 type Sampler struct {
 	opts Options
 
-	mu       sync.RWMutex
-	snap     Snapshot
-	cpuPrev  cpuCounters
-	cpuSeen  bool
-	diskPrev diskCounters
-	diskAt   time.Time
-	diskSeen bool
-	procPrev map[int32]procCPUState
+	mu         sync.RWMutex
+	snap       Snapshot
+	cpuPrev    cpuCounters
+	cpuSeen    bool
+	diskPrev   diskCounters
+	diskAt     time.Time
+	diskSeen   bool
+	procPrev   map[int32]procCPUState
+	gpu        gpuCounter
+	gpuVisible atomic.Bool
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -112,6 +115,7 @@ func (s *Sampler) Latest() Snapshot {
 }
 
 func (s *Sampler) metricLoop(ctx context.Context) {
+	defer s.gpu.close()
 	s.collectMetrics(ctx)
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
@@ -124,6 +128,9 @@ func (s *Sampler) metricLoop(ctx context.Context) {
 		}
 	}
 }
+
+// SetGPUVisible enables on-demand GPU samples for desktop views only.
+func (s *Sampler) SetGPUVisible(visible bool) { s.gpuVisible.Store(visible) }
 
 func (s *Sampler) processLoop(ctx context.Context) {
 	s.collectProcesses(ctx)
@@ -156,6 +163,8 @@ func (s *Sampler) rttLoop(ctx context.Context) {
 func (s *Sampler) collectMetrics(ctx context.Context) {
 	now := s.opts.Now()
 	ts := now.UnixMilli()
+	gpuEnabled := s.opts.Enabled(settings.GPU)
+	gpu := s.gpu.sample(now, s.gpuVisible.Load() && gpuEnabled)
 	var samples []ingest.Sample
 	var errs []string
 
@@ -227,6 +236,8 @@ func (s *Sampler) collectMetrics(ctx context.Context) {
 	}
 	s.mu.Lock()
 	s.snap.CPU = cpu
+	s.snap.GPU = gpu
+	s.snap.GPUAvailable = gpuEnabled && (s.snap.GPUAvailable || gpu != nil)
 	s.snap.Memory = mem
 	if cpu != nil {
 		s.snap.CPU = cpu

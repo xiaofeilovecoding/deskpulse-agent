@@ -1,5 +1,5 @@
-// Package diagnose builds bounded metric summaries, calls DeepSeek's Chat
-// Completions protocol, validates the JSON result and persists local reports.
+// Package diagnose builds bounded metric summaries, calls configured model
+// endpoints, validates JSON output and produces local reports.
 package diagnose
 
 import (

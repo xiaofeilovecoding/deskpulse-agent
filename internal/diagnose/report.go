@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // Finding is one possible cause. Unverified means no valid evidence ID
@@ -67,10 +68,18 @@ type modelResult struct {
 // local catalog and marks unsupported causes as unverified.
 func BuildReport(raw []byte, catalog map[string]Evidence, aliases map[string]string, meta ReportMeta, summaryGaps []string) (Report, error) {
 	raw = bytes.TrimSpace(raw)
+	// Some compatible text-only gateways wrap the single JSON object in a
+	// Markdown fence. The object still passes the same complete schema check.
+	const fenceOpen, fenceClose = "```json\n", "\n```"
+	if len(raw) > len(fenceOpen)+len(fenceClose) &&
+		bytes.HasPrefix(raw, []byte(fenceOpen)) && bytes.HasSuffix(raw, []byte(fenceClose)) {
+		raw = bytes.TrimSpace(raw[len(fenceOpen) : len(raw)-len(fenceClose)])
+	}
 	if len(raw) == 0 {
 		return Report{}, ErrInvalid
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var mr modelResult
 	if err := dec.Decode(&mr); err != nil {
 		return Report{}, ErrInvalid
@@ -79,20 +88,17 @@ func BuildReport(raw []byte, catalog map[string]Evidence, aliases map[string]str
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Report{}, ErrInvalid
 	}
+	if mr.Findings == nil || mr.NextSteps == nil || mr.DataGaps == nil {
+		return Report{}, ErrInvalid
+	}
 
 	summary := strings.TrimSpace(mr.Summary)
 	if summary == "" {
 		return Report{}, ErrInvalid
 	}
-	if len(summary) > 4000 {
-		summary = summary[:4000]
-	}
-	if len(mr.Findings) > 20 {
-		mr.Findings = mr.Findings[:20]
-	}
-	if len(mr.NextSteps) > 20 {
-		mr.NextSteps = mr.NextSteps[:20]
-	}
+	summary = truncateText(summary, 4000)
+	mr.Findings = mr.Findings[:min(len(mr.Findings), 3)]
+	mr.NextSteps = mr.NextSteps[:min(len(mr.NextSteps), 3)]
 	if len(mr.DataGaps) > 20 {
 		mr.DataGaps = mr.DataGaps[:20]
 	}
@@ -103,13 +109,14 @@ func BuildReport(raw []byte, catalog map[string]Evidence, aliases map[string]str
 	unknown := false
 	findings := make([]Finding, 0, len(mr.Findings))
 	for _, f := range mr.Findings {
+		if f.EvidenceIDs == nil {
+			return Report{}, ErrInvalid
+		}
 		cause := strings.TrimSpace(f.Cause)
 		if cause == "" {
 			continue
 		}
-		if len(cause) > 1000 {
-			cause = cause[:1000]
-		}
+		cause = truncateText(cause, 1000)
 		ids := make([]string, 0, len(f.EvidenceIDs))
 		seen := make(map[string]bool)
 		for _, id := range f.EvidenceIDs {
@@ -174,12 +181,23 @@ func cleanStrings(in []string, max int) []string {
 		if s == "" {
 			continue
 		}
-		if len(s) > max {
-			s = s[:max]
-		}
+		s = truncateText(s, max)
 		out = append(out, s)
 	}
 	return out
+}
+
+func truncateText(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	// The JSON decoder supplies valid UTF-8, so only a partial final rune
+	// needs to be backed out when applying a byte budget.
+	end := limit
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
 }
 
 func dedupeStrings(in []string) []string {

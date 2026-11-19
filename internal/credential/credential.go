@@ -5,6 +5,7 @@ package credential
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -35,6 +36,16 @@ func New(dir string) *Store {
 	return &Store{
 		path:    filepath.Join(dir, "credentials.dat"),
 		entropy: []byte("DeskPulse Agent/v0.2/DeepSeek/DPAPI"),
+	}
+}
+
+// ForEndpoint binds an encrypted key to both the provider and API base URL.
+// Moving its ciphertext to a different slot will fail decryption.
+func ForEndpoint(dir, scope string) *Store {
+	digest := sha256.Sum256([]byte(scope))
+	return &Store{
+		path:    filepath.Join(dir, "model-credentials", fmt.Sprintf("%x.dat", digest)),
+		entropy: []byte("DeskPulse Agent/Model/DPAPI\n" + scope),
 	}
 }
 

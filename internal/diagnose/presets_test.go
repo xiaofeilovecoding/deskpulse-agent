@@ -127,8 +127,8 @@ func TestPresetFlowAllFourPresets(t *testing.T) {
 			}
 			req := decodeChatBody(t, body.Load().(string))
 			system, user := req.Messages[0].Content, req.Messages[1].Content
-			if !strings.Contains(system, "Windows 云桌面监测诊断助手") {
-				t.Fatal("v0.3 system prompt missing")
+			if system != DesktopSystemPrompt || req.Messages[0].Role != "system" {
+				t.Fatal("the fixed desktop diagnosis prompt was not sent as a system instruction")
 			}
 			if !strings.Contains(user, preset.Task) {
 				t.Fatalf("preset task missing from user message: %s", user)

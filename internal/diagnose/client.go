@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/xiaofeilovecoding/deskpulse-agent/internal/settings"
 )
 
 const (
@@ -53,18 +55,18 @@ var (
 	ErrNetwork   = &APIError{Code: "deepseek_network_error", Message: "无法连接 DeepSeek，请检查网络"}
 	ErrInvalid   = &APIError{Code: "deepseek_invalid_response", Message: "DeepSeek 返回了无效或空白内容"}
 	ErrTruncated = &APIError{Code: "deepseek_truncated", Message: "DeepSeek 输出被截断，请重试或缩小窗口"}
-	ErrRedirect  = &APIError{Code: "deepseek_redirect_refused", Message: "DeepSeek 返回了跨主机重定向，已拒绝携带凭证"}
+	ErrRedirect  = &APIError{Code: "deepseek_redirect_refused", Message: "DeepSeek 返回重定向，已停止发送凭据"}
 )
 
 var errCrossHostRedirect = errors.New("cross-host redirect refused")
 
-// Client speaks the DeepSeek Chat Completions HTTP protocol. It is safe to
-// inject httptest's client in tests.
+// Client sends bounded, non-streaming requests to one model endpoint.
 type Client struct {
-	BaseURL string
-	HTTP    *http.Client
-	MaxReq  int64
-	MaxResp int64
+	BaseURL  string
+	Provider settings.ModelProvider
+	HTTP     *http.Client
+	MaxReq   int64
+	MaxResp  int64
 }
 
 // NewClient builds a client with a redirect policy that refuses to carry the
@@ -97,16 +99,16 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 			return nil
 		},
 	}
-	return &Client{BaseURL: baseURL, HTTP: hc, MaxReq: maxRequestBytes, MaxResp: maxResponseBytes}
+	return &Client{BaseURL: baseURL, Provider: settings.DeepSeek, HTTP: hc, MaxReq: maxRequestBytes, MaxResp: maxResponseBytes}
 }
 
 type chatRequest struct {
 	Model          string            `json:"model"`
 	Messages       []chatMessage     `json:"messages"`
-	Temperature    float64           `json:"temperature"`
+	Temperature    float64           `json:"temperature,omitempty"`
 	MaxTokens      int               `json:"max_tokens"`
 	ResponseFormat map[string]string `json:"response_format"`
-	Thinking       map[string]string `json:"thinking"`
+	Thinking       map[string]string `json:"thinking,omitempty"`
 	Stream         bool              `json:"stream"`
 }
 
@@ -132,6 +134,49 @@ type chatEnvelope struct {
 
 // Chat sends one JSON-mode completion request and returns the raw content.
 func (c *Client) Chat(ctx context.Context, key, model, system, user string) ([]byte, error) {
+	content, err := c.complete(ctx, key, model, system, user)
+	if err != nil {
+		return nil, c.providerError(err)
+	}
+	if key != "" && containsModelCredential(content, key) {
+		return nil, c.providerError(ErrInvalid)
+	}
+	return content, nil
+}
+
+func containsModelCredential(content []byte, key string) bool {
+	if bytes.Contains(content, []byte(key)) {
+		return true
+	}
+	encoded, err := json.Marshal(key)
+	if err == nil && len(encoded) > 2 && bytes.Contains(content, encoded[1:len(encoded)-1]) {
+		return true
+	}
+	var value any
+	return json.Unmarshal(content, &value) == nil && containsCredentialText(value, key)
+}
+
+func containsCredentialText(value any, key string) bool {
+	switch data := value.(type) {
+	case string:
+		return strings.Contains(data, key)
+	case []any:
+		for _, child := range data {
+			if containsCredentialText(child, key) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range data {
+			if containsCredentialText(child, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *Client) complete(ctx context.Context, key, model, system, user string) ([]byte, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, ErrNoKey
 	}
@@ -139,17 +184,7 @@ func (c *Client) Chat(ctx context.Context, key, model, system, user string) ([]b
 	if model == "" {
 		model = "deepseek-flash"
 	}
-	reqBody := chatRequest{
-		Model: model,
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
-		Temperature:    0.2,
-		MaxTokens:      1400,
-		ResponseFormat: map[string]string{"type": "json_object"},
-		Thinking:       map[string]string{"type": "disabled"},
-	}
+	route, reqBody := c.requestBody(model, system, user)
 	data, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, &APIError{Code: "internal_error", Message: "无法构建诊断请求"}
@@ -161,11 +196,11 @@ func (c *Client) Chat(ctx context.Context, key, model, system, user string) ([]b
 	if int64(len(data)) > maxReq {
 		return nil, &APIError{Code: "request_too_large", Message: "诊断摘要超过发送上限"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+route, bytes.NewReader(data))
 	if err != nil {
 		return nil, &APIError{Code: "internal_error", Message: "无法构建诊断请求"}
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	c.authorize(req, key)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "DeskPulse Agent/0.1")
@@ -189,6 +224,12 @@ func (c *Client) Chat(ctx context.Context, key, model, system, user string) ([]b
 	if int64(len(body)) > limit {
 		return nil, ErrTruncated
 	}
+	switch c.Provider {
+	case settings.Responses:
+		return decodeResponses(body)
+	case settings.Messages:
+		return decodeMessages(body)
+	}
 	var env chatEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, ErrInvalid
@@ -200,18 +241,15 @@ func (c *Client) Chat(ctx context.Context, key, model, system, user string) ([]b
 	if strings.EqualFold(choice.FinishReason, "length") {
 		return nil, ErrTruncated
 	}
-	content := strings.TrimSpace(choice.Message.Content)
-	if content == "" {
-		return nil, ErrInvalid
-	}
-	if int64(len(content)) > maxChatResponseBytes {
-		return nil, ErrTruncated
-	}
-	return []byte(content), nil
+	return textOutput(choice.Message.Content)
 }
 
 // TestConnection performs a lightweight authenticated GET /models.
 func (c *Client) TestConnection(ctx context.Context, key string) error {
+	return c.providerError(c.testConnection(ctx, key))
+}
+
+func (c *Client) testConnection(ctx context.Context, key string) error {
 	if strings.TrimSpace(key) == "" {
 		return ErrNoKey
 	}
@@ -219,7 +257,7 @@ func (c *Client) TestConnection(ctx context.Context, key string) error {
 	if err != nil {
 		return ErrInvalid
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	c.authorize(req, key)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "DeskPulse Agent/0.1")
 	resp, err := c.HTTP.Do(req)

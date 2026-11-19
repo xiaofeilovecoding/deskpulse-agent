@@ -7,18 +7,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 	"unsafe"
 
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/diagnose"
 )
 
-// Analysis page geometry in DIP (spec: ~480×420, sections 结论/证据/建议/数据局限).
+// The diagnosis keeps a fixed toolbar and a scrollable report surface.
 const (
-	analysisWDIP    = 480
-	analysisHDIP    = 420
-	analysisMargin  = 20
-	analysisTitleH  = 40
+	analysisWDIP    = 504
+	analysisHDIP    = 480
+	analysisMargin  = 24
+	analysisTitleH  = 46
 	analysisPresetH = 36
 	analysisStatusH = 40
 )
@@ -46,6 +48,7 @@ const (
 	abCopy
 	abOpenSettings
 	abPreset
+	abEvidence
 )
 
 type aiButton struct {
@@ -65,7 +68,7 @@ func (a *App) createAnalysisPage() (uintptr, error) {
 	w, h := scale(analysisWDIP, dpi), scale(analysisHDIP, dpi)
 	hwnd, err := createWindow(
 		wsExToolWindow|wsExTopmost,
-		"DeskPulse Agent AI 分析",
+		a.tr("DeskPulse Agent AI 分析", "DeskPulse Agent AI diagnosis"),
 		wsPopup,
 		0, 0, w, h,
 		0, 0, a.instance, 0,
@@ -210,31 +213,40 @@ func (a *App) startAnalysis() {
 	}
 	st := a.diag.Status()
 	if !st.Configured {
-		a.setAIState(aiUnconfigured, "未配置 DeepSeek API Key")
+		a.setAIState(aiUnconfigured, a.tr("请在设置中配置模型凭据", "Set up a model credential in Settings"))
 		invalidate(a.analysisUI)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	preview, err := a.diag.PreviewSeconds(ctx, a.aiSeconds, false)
+	preview, err := a.diag.PreparePreset(ctx, a.aiSeconds, a.aiPreset, a.tr("zh-CN", "en"))
 	cancel()
-	if err != nil || len(preview.Summary.Evidence) == 0 {
-		a.setAIState(aiSampling, "正在采样，稍后重试")
+	if err != nil || preview.EvidenceCount() == 0 {
+		message := a.tr("正在采样，稍后重试", "Waiting for samples. Try again shortly.")
+		if err != nil {
+			message = a.tr("无法预览诊断摘要：", "Could not preview the diagnosis: ") + err.Error()
+		}
+		a.setAIState(aiSampling, message)
 		invalidate(a.analysisUI)
 		return
 	}
-	details := fmt.Sprintf("接收方：%s\n范围：最近 %d 秒、%d 项脱敏指标证据。\n\n%s\n\n发送本次诊断？", st.BaseURL, a.aiSeconds, preview.EvidenceCount, preview.WireJSON)
+	profile := preview.Destination()
+	details := fmt.Sprintf(a.tr("接收方：%s\n模型：%s\n范围：最近 %d 秒、%d 项脱敏证据。\n\n%s\n\n发送本次诊断？",
+		"Recipient: %s\nModel: %s\nScope: last %d seconds, %d anonymized findings.\n\n%s\n\nSend this diagnosis?"),
+		profile.BaseURL, profile.Model, preview.Seconds(), preview.EvidenceCount(), preview.WireJSON())
 	if len([]rune(details)) > 2400 {
-		details = fmt.Sprintf("接收方：%s\n范围：最近 %d 秒、%d 项脱敏指标证据。\n\n发送本次诊断？", st.BaseURL, a.aiSeconds, preview.EvidenceCount)
+		details = fmt.Sprintf(a.tr("接收方：%s\n模型：%s\n范围：最近 %d 秒、%d 项脱敏证据。包含指标汇总和进程别名。\n\n发送本次诊断？",
+			"Recipient: %s\nModel: %s\nScope: last %d seconds, %d findings with aggregate metrics and process aliases.\n\nSend this diagnosis?"),
+			profile.BaseURL, profile.Model, preview.Seconds(), preview.EvidenceCount())
 	}
 	if !a.confirm("DeskPulse Agent", details) {
 		return
 	}
-	id, err := a.diag.StartPreset(a.aiSeconds, a.aiPreset, false)
+	id, err := a.diag.StartPrepared(preview)
 	if err != nil {
 		if err == diagnose.ErrBusy {
-			a.setAIState(aiFailed, "已有分析正在进行，请等待完成或取消")
+			a.setAIState(aiFailed, a.tr("已有分析正在进行，请等待完成或取消", "A diagnosis is running. Wait for it or cancel it."))
 		} else {
-			a.setAIState(aiFailed, "无法开始分析："+err.Error())
+			a.setAIState(aiFailed, a.tr("无法开始分析：", "Could not start diagnosis: ")+err.Error())
 		}
 		invalidate(a.analysisUI)
 		return
@@ -244,8 +256,9 @@ func (a *App) startAnalysis() {
 		runID:   id,
 		preset:  a.aiPreset,
 		seconds: a.aiSeconds,
-		status:  "分析中 · " + diagnose.PresetName(a.aiPreset) + " · " + fmtWindow(a.aiSeconds),
+		status:  a.tr("分析中 · ", "Diagnosing · ") + a.localizedPreset(a.aiPreset) + " · " + a.localizedWindow(a.aiSeconds),
 	}
+	a.aiEvidenceExpanded = false
 	a.aiPollFails = 0
 	invalidate(a.analysisUI)
 }
@@ -261,7 +274,7 @@ func (a *App) cancelAnalysis() {
 		return
 	}
 	if a.diag.Cancel(a.aiState.runID) {
-		a.aiState.status = "正在取消…"
+		a.aiState.status = a.tr("正在取消…", "Cancelling…")
 	}
 	invalidate(a.analysisUI)
 }
@@ -277,7 +290,7 @@ func (a *App) pollAI() {
 	if err != nil {
 		a.aiPollFails++
 		if a.aiPollFails >= 3 {
-			a.setAIState(aiFailed, "读取分析状态失败")
+			a.setAIState(aiFailed, a.tr("读取分析状态失败", "Could not read diagnosis status"))
 			invalidate(a.analysisUI)
 		}
 		return
@@ -288,23 +301,23 @@ func (a *App) pollAI() {
 	case "completed":
 		report, perr := diagnose.ParseStoredReport(d.ReportJSON)
 		if perr != nil {
-			a.setAIState(aiFailed, "本地报告无法解析")
+			a.setAIState(aiFailed, a.tr("本地报告无法解析", "Could not read the local report"))
 		} else {
 			a.aiState.kind = aiCompleted
-			a.aiState.status = "完成 · " + diagnose.PresetName(report.Preset) + " · " + windowLabel(report)
+			a.aiState.status = a.tr("完成 · ", "Complete · ") + a.localizedPreset(report.Preset) + " · " + a.localizedWindow(max(report.WindowSeconds, report.WindowMinutes*60))
 			a.aiState.report = &report
 			a.aiCompletedID = d.ID
 			a.aiState.runID = ""
 			a.rebuildAnalysisLines(&report)
 		}
 	case "canceled":
-		a.setAIState(aiCanceled, "已取消")
+		a.setAIState(aiCanceled, a.tr("已取消", "Cancelled"))
 	default:
 		msg := d.ErrorMessage
 		if msg == "" {
 			msg = d.ErrorCode
 		}
-		a.setAIState(aiFailed, "分析失败："+msg)
+		a.setAIState(aiFailed, a.tr("分析失败：", "Diagnosis failed: ")+msg)
 	}
 	invalidate(a.analysisUI)
 }
@@ -314,20 +327,26 @@ func (a *App) pollAI() {
 // omitted.
 func (a *App) rebuildAnalysisLines(report *diagnose.Report) {
 	dpi := a.dpiForAnalysis()
+	width := clientRect(a.analysisUI).Right
+	if width <= 0 {
+		width = scale(analysisWDIP, dpi)
+	}
 	a.aiLinesDPI = dpi
-	a.aiLines = analysisLines(report, int32(scale(analysisWDIP, dpi)-scale(2*analysisMargin, dpi)), dpi)
+	a.aiLinesWidth = width
+	a.aiLines = a.analysisLines(report, width-scale(2*analysisMargin, dpi), dpi)
 	a.aiScroll = 0
 }
 
 // analysisLines renders the validated report. Aliases are back-filled with
 // real local names; this stays on the machine.
-func analysisLines(report *diagnose.Report, widthPx int32, dpi uint32) []resultLine {
+func (a *App) analysisLines(report *diagnose.Report, widthPx int32, dpi uint32) []resultLine {
 	var out []resultLine
 	add := func(text string, kind byte) { out = append(out, resultLine{Text: text, Kind: kind}) }
-	add("结论", 'h')
-	add(backfillAliases(report.Summary, report.Aliases), 'b')
+	add(a.tr("结论", "Summary"), 'h')
+	add(backfillAliases(report.Summary, report.Aliases), 's')
+	add("", 'g')
+	add(a.tr("证据", "Evidence"), 'e')
 	if len(report.Findings) > 0 {
-		add("证据", 'h')
 		catalog := map[string]diagnose.Evidence{}
 		for _, e := range report.Evidence {
 			catalog[e.ID] = e
@@ -335,28 +354,38 @@ func analysisLines(report *diagnose.Report, widthPx int32, dpi uint32) []resultL
 		for _, f := range report.Findings {
 			cause := backfillAliases(f.Cause, report.Aliases)
 			if f.Unverified || len(f.EvidenceIDs) == 0 {
-				add("· "+cause+"（待验证）", 'a')
+				add("· "+cause+a.tr("（待验证）", " (unverified)"), 'a')
 				continue
 			}
 			add("· "+cause, 'b')
-			for _, id := range f.EvidenceIDs {
-				if e, ok := catalog[id]; ok {
-					add("  "+evidenceHumanLine(e, report.Aliases), 'm')
+			if a.aiEvidenceExpanded {
+				for _, id := range f.EvidenceIDs {
+					if e, ok := catalog[id]; ok {
+						add("  "+evidenceHumanLine(e, report.Aliases), 'm')
+					}
 				}
 			}
 		}
+	} else {
+		add(a.tr("没有支持具体归因的发现。", "No finding supports a specific cause."), 'm')
 	}
+	add("", 'g')
+	add(a.tr("下一步", "Next steps"), 'h')
 	if len(report.NextSteps) > 0 {
-		add("建议", 'h')
 		for _, s := range report.NextSteps {
 			add("· "+backfillAliases(s, report.Aliases), 'b')
 		}
+	} else {
+		add(a.tr("卡顿重现时复测。", "Sample again when the slowdown recurs."), 'm')
 	}
+	add("", 'g')
+	add(a.tr("数据局限", "Evidence gaps"), 'h')
 	if len(report.DataGaps) > 0 {
-		add("数据局限", 'h')
 		for _, s := range report.DataGaps {
 			add("· "+s, 'a')
 		}
+	} else {
+		add(a.tr("报告未标记额外数据缺口。", "The report flagged no additional evidence gaps."), 'm')
 	}
 	return wrapLines(out, widthPx, dpi)
 }
@@ -373,30 +402,35 @@ func wrapLines(in []resultLine, widthPx int32, dpi uint32) []resultLine {
 	var out []resultLine
 	for _, l := range in {
 		font := f.Body
-		if l.Kind == 'h' {
-			font = f.Title
+		if l.Kind == 'm' {
+			font = f.Small
+		} else if l.Kind == 's' {
+			font = f.valueFont(l.Text)
 		}
 		w, _ := measureText(hdc, l.Text, font)
 		if int32(w) <= widthPx {
 			out = append(out, l)
 			continue
 		}
-		// Character-accurate wrapping for CJK: cut at width, breaking at the
-		// last space when one is inside the final chunk.
 		runes := []rune(l.Text)
-		line := ""
-		for i := 0; i < len(runes); i++ {
-			cand := line + string(runes[i])
-			cw, _ := measureText(hdc, cand, font)
-			if int32(cw) > widthPx && line != "" {
-				out = append(out, resultLine{Text: line, Kind: l.Kind})
-				line = string(runes[i])
-				continue
+		for len(runes) != 0 {
+			end := max(1, sort.Search(len(runes), func(i int) bool {
+				w, _ := measureText(hdc, string(runes[:i+1]), font)
+				return w > widthPx
+			}))
+			if end < len(runes) {
+				for i := end - 1; i > end/2; i-- {
+					if runes[i] == ' ' {
+						end = i
+						break
+					}
+				}
 			}
-			line = cand
-		}
-		if line != "" {
-			out = append(out, resultLine{Text: line, Kind: l.Kind})
+			out = append(out, resultLine{Text: strings.TrimRight(string(runes[:end]), " "), Kind: l.Kind})
+			runes = runes[end:]
+			for len(runes) != 0 && runes[0] == ' ' {
+				runes = runes[1:]
+			}
 		}
 	}
 	return out
@@ -416,7 +450,7 @@ func (a *App) aiScrollMax() int32 {
 }
 
 func (a *App) handleAnalysisKey(vk uintptr) {
-	btns := a.aiButtonsFor()
+	btns := a.analysisFocusButtons()
 	n := len(btns)
 	if n == 0 {
 		return
@@ -452,7 +486,7 @@ func (a *App) handleAnalysisClick(x, y int32) {
 		a.showAIMoreMenu()
 		return
 	}
-	for _, btn := range a.aiButtonsFor() {
+	for _, btn := range a.analysisFocusButtons() {
 		if btn.ID != abNone && pointIn(x, y, btn.Rect) {
 			a.doAIButton(btn.ID)
 			return
@@ -469,14 +503,50 @@ func (a *App) doAIButton(id aiButtonID) {
 	case abCopy:
 		if a.aiState.report != nil {
 			clipboardSetText(reportText(*a.aiState.report))
-			a.aiState.status = "已复制到剪贴板 · " + a.aiState.status
+			a.aiState.status = a.tr("已复制到剪贴板 · ", "Copied · ") + a.aiState.status
 		}
 	case abOpenSettings:
 		a.openSettings()
 	case abPreset:
 		a.showPresetMenu()
+	case abEvidence:
+		if a.aiState.report != nil {
+			savedScroll := a.aiScroll
+			a.aiEvidenceExpanded = !a.aiEvidenceExpanded
+			a.rebuildAnalysisLines(a.aiState.report)
+			a.aiScroll = min(savedScroll, a.aiScrollMax())
+		}
 	}
 	invalidate(a.analysisUI)
+}
+
+func (a *App) analysisFocusButtons() []aiButton {
+	buttons := a.aiButtonsFor()
+	if a.aiEvidenceHit != (rect{}) {
+		buttons = append(buttons, aiButton{ID: abEvidence, Rect: a.aiEvidenceHit})
+	}
+	return buttons
+}
+
+func (a *App) evidenceDisclosure(report *diagnose.Report) string {
+	if report == nil {
+		return ""
+	}
+	ids := make(map[string]struct{})
+	for _, finding := range report.Findings {
+		if !finding.Unverified {
+			for _, id := range finding.EvidenceIDs {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	if a.aiEvidenceExpanded {
+		return a.tr("收起读数", "Hide readings")
+	}
+	return fmt.Sprintf(a.tr("展开 %d 条读数", "Show readings (%d)"), len(ids))
 }
 
 func (a *App) showPresetMenu() {
@@ -493,7 +563,7 @@ func (a *App) showPresetMenu() {
 		if p.ID == a.aiPreset {
 			flags |= mfChecked
 		}
-		appendMenu(menu, uint32(flags), uintptr(100+i), p.Name)
+		appendMenu(menu, uint32(flags), uintptr(100+i), a.localizedPreset(p.ID))
 	}
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -514,8 +584,9 @@ func (a *App) showAIMoreMenu() {
 		return
 	}
 	defer procDestroyMenu.Call(menu)
-	appendMenu(menu, mfString, 200, "查看历史")
-	appendMenu(menu, mfString, 201, "导出当前报告")
+	appendMenu(menu, mfString, 200, a.tr("查看历史", "View history"))
+	appendMenu(menu, mfString, 201, a.tr("导出当前报告", "Export this report"))
+	appendMenu(menu, mfString, 202, a.tr("预览过期诊断缓存", "Review expired snapshots"))
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	procSetForegroundWindow.Call(a.analysisUI)
@@ -526,6 +597,8 @@ func (a *App) showAIMoreMenu() {
 		a.openHistory()
 	case 201:
 		a.exportCurrentReport()
+	case 202:
+		a.cacheAction(trayCacheClear)
 	}
 }
 
@@ -533,7 +606,7 @@ func (a *App) showAIMoreMenu() {
 // data directory. Keys are never exported.
 func (a *App) exportCurrentReport() {
 	if a.aiCompletedID == "" || a.aiState.report == nil {
-		a.aiState.status = "还没有可导出的报告"
+		a.aiState.status = a.tr("还没有可导出的报告", "There is no report to export")
 		invalidate(a.analysisUI)
 		return
 	}
@@ -541,23 +614,23 @@ func (a *App) exportCurrentReport() {
 	defer cancel()
 	data, err := a.diag.Export(ctx, a.aiCompletedID)
 	if err != nil {
-		a.aiState.status = "导出失败：" + err.Error()
+		a.aiState.status = a.tr("导出失败：", "Export failed: ") + err.Error()
 		invalidate(a.analysisUI)
 		return
 	}
 	dir := filepath.Join(a.dataDir, "exports")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		a.aiState.status = "创建导出目录失败：" + err.Error()
+		a.aiState.status = a.tr("创建导出目录失败：", "Could not create the export folder: ") + err.Error()
 		invalidate(a.analysisUI)
 		return
 	}
 	path := filepath.Join(dir, "deskpulse-diagnosis-"+a.aiCompletedID+".json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		a.aiState.status = "写入导出文件失败：" + err.Error()
+		a.aiState.status = a.tr("写入导出文件失败：", "Could not write export: ") + err.Error()
 		invalidate(a.analysisUI)
 		return
 	}
-	a.aiState.status = "已导出：" + filepath.Base(path)
+	a.aiState.status = a.tr("已导出：", "Exported: ") + filepath.Base(path)
 	invalidate(a.analysisUI)
 }
 
@@ -578,8 +651,7 @@ func (a *App) aiButtonsFor() []aiButton {
 	btnTop := statusTop + (statusBot-statusTop-btnH)/2
 	x := w - m
 	var out []aiButton
-	addBtn := func(id aiButtonID, label string, widthDIP int, primary bool) {
-		_ = primary
+	addBtn := func(id aiButtonID, label string, widthDIP int) {
 		wpx := scale(widthDIP, dpi)
 		x -= wpx
 		out = append(out, aiButton{ID: id, Label: label, Rect: rect{x, btnTop, x + wpx, btnTop + btnH}})
@@ -588,19 +660,19 @@ func (a *App) aiButtonsFor() []aiButton {
 	s := a.aiState.kind
 	switch s {
 	case aiRunning:
-		addBtn(abCancel, "取消", 64, false)
+		addBtn(abCancel, a.tr("取消", "Cancel"), 64)
 	case aiCompleted:
-		addBtn(abCopy, "复制", 64, false)
-		addBtn(abRetry, "重新分析", 92, false)
+		addBtn(abCopy, a.tr("复制", "Copy"), 64)
+		addBtn(abRetry, a.tr("重新分析", "Run again"), 104)
 	case aiCanceled, aiSampling, aiFailed:
 		if s == aiFailed && a.aiFailedUnconfigured() {
-			addBtn(abOpenSettings, "打开设置", 92, false)
+			addBtn(abOpenSettings, a.tr("打开设置", "Open settings"), 114)
 		}
-		addBtn(abRetry, "重新分析", 92, false)
+		addBtn(abRetry, a.tr("重新分析", "Run again"), 104)
 	case aiUnconfigured:
-		addBtn(abOpenSettings, "打开设置", 92, false)
+		addBtn(abOpenSettings, a.tr("打开设置", "Open settings"), 114)
 	case aiIdle:
-		addBtn(abRetry, "重新分析", 92, false)
+		addBtn(abRetry, a.tr("开始分析", "Analyze"), 104)
 	}
 	return out
 }
@@ -621,10 +693,13 @@ func (a *App) paintAnalysisInto(b *windowBuffer) {
 	t := a.theme
 	fillRect(b.hdc, rect{0, 0, b.w, b.h}, t.bg())
 	m := scale(analysisMargin, dpi)
+	a.aiEvidenceHit = rect{}
 
 	// Title row.
-	titleR := rect{m, scale(12, dpi), b.w - m - scale(70, dpi), scale(12, dpi) + scale(analysisTitleH-12, dpi)}
-	drawText(b.hdc, "AI 分析", titleR, f.TitleCJK, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	titleR := rect{m + scale(31, dpi), scale(12, dpi), b.w - m - scale(70, dpi), scale(analysisTitleH, dpi)}
+	badge := rect{m, titleR.Top, m + scale(25, dpi), titleR.Bottom}
+	drawIcon(b.hdc, "pulse", t.accent(), iconRect(badge, scale(21, dpi)))
+	drawText(b.hdc, a.tr("AI 分析", "AI diagnosis"), titleR, f.TitleCJK, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
 	closeBox := rect{b.w - m - scale(28, dpi), scale(12, dpi), b.w - m, scale(12, dpi) + scale(28, dpi)}
 	moreBox := rect{b.w - m - scale(28, dpi)*2 - scale(4, dpi), scale(12, dpi), b.w - m - scale(28, dpi) - scale(4, dpi), scale(12, dpi) + scale(28, dpi)}
 	drawIcon(b.hdc, "more", t.muted(), iconRect(moreBox, scale(18, dpi)))
@@ -634,12 +709,12 @@ func (a *App) paintAnalysisInto(b *windowBuffer) {
 	presetTop := scale(analysisTitleH, dpi)
 	presetBtn := rect{m, presetTop, m + scale(150, dpi), presetTop + scale(32, dpi)}
 	roundRect(b.hdc, presetBtn, scale(8, dpi), t.panel(), t.line())
-	label := diagnose.PresetName(a.aiPreset)
+	label := a.localizedPreset(a.aiPreset)
 	drawText(b.hdc, label, rect{presetBtn.Left + scale(12, dpi), presetBtn.Top, presetBtn.Right - scale(22, dpi), presetBtn.Bottom}, f.Body, t.text(), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	chev := rect{presetBtn.Right - scale(20, dpi), presetBtn.Top + (presetBtn.Bottom-presetBtn.Top-scale(12, dpi))/2, presetBtn.Right - scale(8, dpi), 0}
 	chev.Bottom = chev.Top + scale(12, dpi)
 	drawIcon(b.hdc, "chevron-down", t.muted(), chev)
-	secondsLabel := fmtWindow(a.aiSeconds)
+	secondsLabel := a.localizedWindow(a.aiSeconds)
 	drawText(b.hdc, secondsLabel, rect{b.w - m - scale(120, dpi), presetTop, b.w - m, presetTop + scale(32, dpi)}, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
 
 	// Status row with the state's action buttons.
@@ -652,48 +727,105 @@ func (a *App) paintAnalysisInto(b *windowBuffer) {
 	case aiFailed, aiUnconfigured, aiSampling:
 		statusColor = t.amber()
 	}
-	drawText(b.hdc, a.aiState.status, rect{m, statusTop, b.w - m - scale(220, dpi), statusBot}, f.Small, statusColor, dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	btns := a.aiButtonsFor()
+	statusRight := b.w - m
+	for _, btn := range btns {
+		statusRight = min(statusRight, btn.Rect.Left-scale(12, dpi))
+	}
+	drawText(b.hdc, a.aiState.status, rect{m, statusTop, statusRight, statusBot}, f.Small, statusColor, dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	for i, btn := range btns {
 		fill := t.panel()
 		border := t.line()
+		ink := t.text()
+		if btn.ID == abRetry && (a.aiState.kind == aiIdle || a.aiState.kind == aiFailed) {
+			fill, border, ink = t.accent(), t.accent(), t.accentText()
+		}
 		if a.aiFocus == i {
 			border = t.accent()
 		}
 		roundRect(b.hdc, btn.Rect, scale(6, dpi), fill, border)
-		drawText(b.hdc, btn.Label, btn.Rect, f.Small, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		icon := ""
+		switch btn.ID {
+		case abCopy:
+			icon = "copy"
+		case abRetry:
+			icon = "refresh"
+			if a.aiState.kind == aiIdle {
+				icon = "sparkle"
+			}
+		case abOpenSettings:
+			icon = "settings"
+		}
+		drawActionLabel(b.hdc, btn.Rect, btn.Label, icon, f.Small, ink, dpi)
 	}
+	fillRect(b.hdc, rect{m, statusBot, b.w - m, statusBot + scale(1, dpi)}, t.line())
 
 	// Result area. Re-wrap cached lines if the paint DPI differs from the
 	// DPI they were laid out at (monitor DPI change or capture override).
-	if a.aiState.report != nil && a.aiLinesDPI != dpi {
+	if a.aiState.report != nil && (a.aiLinesDPI != dpi || a.aiLinesWidth != b.w) {
 		a.rebuildAnalysisLines(a.aiState.report)
 	}
-	resTop := statusBot + scale(4, dpi)
+	resTop := statusBot + scale(11, dpi)
 	lineH := scale(analysisLineH, dpi)
 	scroll := a.aiScroll
 	if max := a.aiScrollMax(); scroll > max {
 		scroll = max
 	}
 	if len(a.aiLines) == 0 {
-		hint := "点击「AI 分析」后，结论、证据、建议和数据局限会显示在这里。"
-		if a.aiState.kind == aiRunning {
-			hint = "正在准备本地摘要并发送…"
+		hint := ""
+		switch a.aiState.kind {
+		case aiIdle:
+			hint = a.tr("分析开始前可以检查将要发送的摘要。", "Review the summary before it is sent.")
+		case aiRunning:
+			hint = a.tr("正在发送已确认的摘要…", "Sending the approved summary…")
+		case aiFailed, aiUnconfigured:
+			width, _ := measureText(b.hdc, a.aiState.status, f.Small)
+			if width > statusRight-m {
+				hint = a.aiState.status
+			}
 		}
-		drawText(b.hdc, hint, rect{m, resTop + scale(16, dpi), b.w - m, resTop + scale(40, dpi)}, f.Body, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawText(b.hdc, hint, rect{m, resTop + scale(12, dpi), b.w - m, b.h - scale(16, dpi)}, f.Body, t.muted(), dtLeft|dtWordBreak|dtNoPrefix)
 		return
 	}
 	first := int(scroll / lineH)
 	yoff := resTop - scroll + int32(first)*lineH
+	saved, _, _ := procSaveDC.Call(b.hdc)
+	if saved != 0 {
+		procIntersectClipRect.Call(b.hdc, uintptr(m), uintptr(resTop), uintptr(b.w-m), uintptr(b.h))
+		defer procRestoreDC.Call(b.hdc, saved)
+	}
 	for i := first; i < len(a.aiLines); i++ {
-		if yoff > b.h {
+		if yoff+lineH > b.h {
 			break
 		}
 		l := a.aiLines[i]
 		r := rect{m, yoff, b.w - m, yoff + lineH}
 		switch l.Kind {
 		case 'h':
-			drawText(b.hdc, l.Text, r, f.Body, t.accent(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+			drawText(b.hdc, l.Text, r, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+		case 'e':
+			drawText(b.hdc, l.Text, r, f.Small, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+			if caption := a.evidenceDisclosure(a.aiState.report); caption != "" && r.Top >= resTop {
+				width, _ := measureText(b.hdc, caption, f.Small)
+				right := r.Right
+				button := rect{right - width - scale(30, dpi), r.Top, right, r.Bottom}
+				a.aiEvidenceHit = button
+				if a.aiFocus == len(btns) {
+					roundRect(b.hdc, button, scale(5, dpi), t.panel(), t.accent())
+				}
+				text := rect{button.Left + scale(7, dpi), button.Top, right - scale(15, dpi), button.Bottom}
+				drawText(b.hdc, caption, text, f.Small, t.accent(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+				marker := rect{right - scale(13, dpi), button.Top, right - scale(2, dpi), button.Bottom}
+				icon := "chevron-down"
+				if a.aiEvidenceExpanded {
+					icon = "chevron-up"
+				}
+				drawIcon(b.hdc, icon, t.accent(), iconRect(marker, scale(10, dpi)))
+			}
+		case 's':
+			drawText(b.hdc, l.Text, r, f.valueFont(l.Text), t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+		case 'g':
+			fillRect(b.hdc, rect{r.Left, r.Top + lineH/2, r.Right, r.Top + lineH/2 + scale(1, dpi)}, t.line())
 		case 'a':
 			drawText(b.hdc, l.Text, r, f.Body, t.amber(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
 		case 'm':

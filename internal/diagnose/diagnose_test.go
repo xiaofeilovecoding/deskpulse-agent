@@ -116,6 +116,11 @@ func TestBuildReportValidationAndEvidenceFiltering(t *testing.T) {
 	if !contains(r.DataGaps, "样本不足") {
 		t.Fatalf("summary gap missing: %#v", r.DataGaps)
 	}
+	fenced := append([]byte("```json\n"), raw...)
+	fenced = append(fenced, []byte("\n```")...)
+	if _, err := BuildReport(fenced, catalog, nil, ReportMeta{}, nil); err != nil {
+		t.Fatalf("fenced JSON object should use the same validation: %v", err)
+	}
 
 	unverified := []byte(`{"summary":"证据不足。","findings":[{"cause":"可能原因","evidence_ids":["nope"]}],"next_steps":[],"data_gaps":["缺少数据"]}`)
 	r, err = BuildReport(unverified, catalog, nil, ReportMeta{ID: "id2"}, nil)
@@ -128,6 +133,10 @@ func TestBuildReportValidationAndEvidenceFiltering(t *testing.T) {
 		[]byte(`not json`),
 		[]byte(`{"summary":"","findings":[],"next_steps":[],"data_gaps":[]}`),
 		[]byte(`{"summary":"ok","findings":[{"cause":"x","evidence_ids":[]}],"next_steps":[],"data_gaps":[]} {}`),
+		[]byte(`{"summary":"ok","findings":[],"next_steps":["retry"],"data_gaps":null}`),
+		[]byte(`{"summary":"ok","findings":[{"cause":"x","evidence_ids":null}],"next_steps":[],"data_gaps":[]}`),
+		[]byte(`{"summary":"ok","findings":[],"next_steps":["retry"],"data_gaps":[],"command":"unexpected"}`),
+		[]byte("```json\n```"),
 	} {
 		if _, err := BuildReport(bad, catalog, nil, ReportMeta{}, nil); err == nil {
 			t.Fatalf("expected invalid report for %q", string(bad))
