@@ -140,10 +140,11 @@ func (a *App) paintWindow(hwnd uintptr, draw func(b *windowBuffer)) {
 		return
 	}
 	draw(b)
-	wdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&a.paintScratch)))
+	var paint paintStruct
+	wdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
 	if wdc != 0 {
 		blit(wdc, rect{0, 0, b.w, b.h}, b.hdc)
-		procEndPaint.Call(hwnd, wdc)
+		procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
 	}
 }
 

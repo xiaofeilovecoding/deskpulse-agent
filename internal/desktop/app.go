@@ -76,11 +76,10 @@ type App struct {
 	services sync.WaitGroup
 	instance syscall.Handle
 
-	theme        uiTheme
-	buffers      map[uintptr]*windowBuffer
-	fonts        map[uint32]*fontSet
-	paintScratch paintStruct
-	captureDPI   uint32
+	theme      uiTheme
+	buffers    map[uintptr]*windowBuffer
+	fonts      map[uint32]*fontSet
+	captureDPI uint32
 
 	ball       uintptr
 	hover      uintptr
