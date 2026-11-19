@@ -9,7 +9,11 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -32,8 +36,10 @@ jobs:
           "$executable" --check-latency
           "$executable" --check-export | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["schema_version"] == 1 and len(s["metrics"]) == 5 and s["metrics"][0]["value"] == 0.3'
       - name: Package the preview
+        if: matrix.runner == 'macos-15'
         run: ditto -c -k --keepParent "dist/DeskPulse Agent.app" dist/deskpulse-agent-macos-universal.zip
       - uses: actions/upload-artifact@v4
+        if: matrix.runner == 'macos-15'
         with:
           name: deskpulse-agent-macos-universal
           path: dist/deskpulse-agent-macos-universal.zip

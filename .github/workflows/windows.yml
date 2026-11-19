@@ -25,6 +25,30 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: go build -trimpath -ldflags="-H=windowsgui" -o dist/deskpulse-agent.exe ./cmd/deskpulse-agent
+      - name: Run the native renderer from the built executable
+        shell: pwsh
+        run: |
+          $capture = Join-Path $env:RUNNER_TEMP 'deskpulse-capture'
+          $data = Join-Path $env:RUNNER_TEMP 'deskpulse-capture-data'
+          $info = [System.Diagnostics.ProcessStartInfo]::new((Resolve-Path dist/deskpulse-agent.exe).Path)
+          $info.UseShellExecute = $false
+          foreach ($arg in @('--synthetic', '--data-dir', $data, '--capture-dir', $capture)) { $info.ArgumentList.Add($arg) }
+          $process = [System.Diagnostics.Process]::Start($info)
+          try {
+            if (-not $process.WaitForExit(30000)) {
+              $process.Kill()
+              throw 'Native renderer timed out.'
+            }
+            if ($process.ExitCode -ne 0) { throw 'Native renderer failed.' }
+          } finally {
+            $process.Dispose()
+          }
+          foreach ($scale in @('100%', '125%', '150%', '200%')) {
+            foreach ($frame in @('ball.png', 'hover.png', 'settings-deepseek.png', 'analysis-details.png')) {
+              $path = Join-Path $capture "$scale/$frame"
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing capture $path" }
+            }
+          }
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
