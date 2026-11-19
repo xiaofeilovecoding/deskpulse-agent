@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeskPulse Agent metric snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "device_alias",
+    "captured_at",
+    "scope",
+    "window_seconds",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "device_alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "scope_id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "windows_session",
+            "user_device",
+            "virtual_desktop",
+            "branch_probe"
+          ]
+        },
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "site_alias": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        }
+      }
+    },
+    "window_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "metrics": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "metric_id",
+          "value",
+          "unit",
+          "quality"
+        ],
+        "properties": {
+          "metric_id": {
+            "enum": [
+              "cpu.used_ratio",
+              "memory.available_bytes",
+              "memory.total_bytes",
+              "memory.commit_used_ratio",
+              "disk.read_bytes_per_sec",
+              "disk.write_bytes_per_sec",
+              "disk.busy_ratio",
+              "disk.free_bytes",
+              "disk.capacity_bytes",
+              "network.icmp_rtt_ms",
+              "network.tcp_connect_ms",
+              "network.https_dns_ms",
+              "network.https_tls_ms",
+              "network.https_ttfb_ms"
+            ]
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "unit": {
+            "enum": [
+              "ratio",
+              "bytes",
+              "bytes_per_sec",
+              "ms"
+            ]
+          },
+          "quality": {
+            "enum": [
+              "ok",
+              "unknown",
+              "paused",
+              "unsupported",
+              "access_denied",
+              "timeout",
+              "probe_failed"
+            ]
+          },
+          "target_alias": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "protocol": {
+            "enum": [
+              "icmp",
+              "tcp",
+              "https"
+            ]
+          },
+          "coverage_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "quality": {
+                  "const": "ok"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "value": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "unit": {
+                  "const": "ratio"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "cpu.used_ratio"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ratio"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "memory.available_bytes"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "memory.total_bytes"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "memory.commit_used_ratio"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ratio"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "disk.read_bytes_per_sec"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes_per_sec"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "disk.write_bytes_per_sec"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes_per_sec"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "disk.busy_ratio"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ratio"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "disk.free_bytes"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "disk.capacity_bytes"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "network.icmp_rtt_ms"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "network.tcp_connect_ms"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "network.https_dns_ms"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "network.https_tls_ms"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "metric_id": {
+                  "const": "network.https_ttfb_ms"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

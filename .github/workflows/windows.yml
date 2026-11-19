@@ -1,0 +1,27 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check publication paths
+        shell: pwsh
+        run: |
+          $internal = @(git ls-files -- AGENTS.md docs/PRD.md docs/design docs/development-prompt.md docs/internal)
+          if ($internal.Count -ne 0) { throw 'Internal material is tracked in the publication tree.' }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go build -trimpath -ldflags="-H=windowsgui" -o dist/deskpulse-agent.exe ./cmd/deskpulse-agent

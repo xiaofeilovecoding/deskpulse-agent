@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "device_alias": "demo-device",
+  "captured_at": "2026-01-01T14:26:55Z",
+  "scope": {
+    "kind": "virtual_desktop",
+    "scope_id": "synthetic-session",
+    "site_alias": "test-site"
+  },
+  "window_seconds": 30,
+  "metrics": [
+    {
+      "metric_id": "cpu.used_ratio",
+      "value": 0.24,
+      "unit": "ratio",
+      "quality": "ok"
+    },
+    {
+      "metric_id": "network.tcp_connect_ms",
+      "value": 118,
+      "unit": "ms",
+      "quality": "ok",
+      "target_alias": "example-hq",
+      "protocol": "tcp",
+      "coverage_ratio": 1
+    }
+  ]
+}

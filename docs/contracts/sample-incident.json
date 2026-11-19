@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "device_alias": "demo-device",
+  "event_id": "demo-event-open-1",
+  "incident_id": "demo-incident-1",
+  "kind": "opened",
+  "severity": "warning",
+  "rule_id": "network.latency",
+  "observed_at": "2026-01-01T14:26:55Z",
+  "scope": {
+    "kind": "virtual_desktop",
+    "scope_id": "synthetic-session",
+    "site_alias": "test-site"
+  },
+  "target_alias": "example-hq",
+  "evidence": {
+    "window_seconds": 45,
+    "coverage_ratio": 1,
+    "metrics": [
+      {
+        "metric_id": "network.tcp_connect_ms",
+        "value": 118,
+        "unit": "ms",
+        "quality": "ok",
+        "target_alias": "example-hq",
+        "protocol": "tcp",
+        "coverage_ratio": 1
+      }
+    ]
+  }
+}

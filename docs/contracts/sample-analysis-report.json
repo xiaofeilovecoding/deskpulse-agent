@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "demo-analysis-1",
+  "locale": "en",
+  "summary": "Connection time to headquarters increased. Check the current link.",
+  "confidence": "medium",
+  "evidence_ids": [
+    "example-evidence-1"
+  ],
+  "limitations": [
+    "Latency on the physical endpoint was not sampled."
+  ],
+  "suggestions": [
+    {
+      "action": "retest_target",
+      "reason": "Verify whether the high connection time persists.",
+      "target_id": "example-hq"
+    }
+  ]
+}
