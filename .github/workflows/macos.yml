@@ -20,5 +20,12 @@ jobs:
           app="dist/DeskPulse Agent.app"
           executable="$app/Contents/MacOS/deskpulse-agent"
           plutil -lint "$app/Contents/Info.plist"
-          lipo -verify_arch arm64 x86_64 "$executable"
+          lipo "$executable" -verify_arch arm64 x86_64
           "$executable" --sample | python3 -c 'import json,sys; s=json.load(sys.stdin); assert 0 <= s["cpu_used_ratio"] <= 1 and 0 <= s["estimated_available_memory_bytes"] <= s["physical_memory_bytes"]'
+      - name: Package the preview
+        run: ditto -c -k --keepParent "dist/DeskPulse Agent.app" dist/deskpulse-agent-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskpulse-agent-macos-universal
+          path: dist/deskpulse-agent-macos-universal.zip
+          if-no-files-found: error

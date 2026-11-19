@@ -25,3 +25,8 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: go build -trimpath -ldflags="-H=windowsgui" -o dist/deskpulse-agent.exe ./cmd/deskpulse-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskpulse-agent-windows-x64
+          path: dist/deskpulse-agent.exe
+          if-no-files-found: error
