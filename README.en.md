@@ -1,6 +1,6 @@
 # DeskPulse Agent
 
-DeskPulse Agent is a desktop resource monitor and on-demand diagnostic utility. The Windows preview includes a native tray, floating monitor, user-session process view, local findings, opt-in model analysis, read-only metrics export and verified recovery copies of expired app snapshots.
+DeskPulse Agent is a desktop resource monitor and on-demand diagnostic utility. The Windows preview includes a native tray, floating monitor, user-session process view, local findings, opt-in model analysis, read-only metrics export and verified recovery copies of expired app snapshots. It was verified on Windows 10 22H2 and in a Windows 11 24H2 x64 evaluation VM. [Verification scope](docs/preview.md)
 
 ## Build on Windows x64
 
@@ -20,5 +20,7 @@ Probes and incident delivery are opt-in. The model settings support OpenAI-style
 ## macOS menu-bar preview
 
 On macOS 13 or later with Go and Xcode Command Line Tools, run `bash macos/build.sh` and open `dist/DeskPulse Agent.app`. The universal build targets Intel and Apple Silicon. The menu-bar preview offers CPU, estimated available memory, disk I/O where available, same-user processes, optional TCP connection timing and on-demand model analysis of CPU and memory using Keychain credentials.
+
+Hosted macOS 15 tests on Intel and Apple Silicon cover the native menu bar, both themes, the process window and isolated Keychain credentials.
 
 [中文](README.md) · [Current release status](docs/preview.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [License](LICENSE)

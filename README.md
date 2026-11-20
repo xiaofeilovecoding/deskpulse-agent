@@ -1,6 +1,6 @@
 # DeskPulse Agent
 
-轻量 Windows 桌面监测、按需 AI 诊断和本机处置。**0.1 Preview** 面向 Windows x64，先在 Windows 10 22H2 验证。运行时以普通用户启动。
+轻量 Windows 桌面监测、按需 AI 诊断和本机处置。**0.1 Preview** 面向 Windows x64，已在 Windows 10 22H2 和 Windows 11 24H2 评估虚拟机验证。运行时以普通用户启动。 [验证范围](docs/preview.md)
 
 ## 当前可用
 
@@ -34,6 +34,8 @@ go build -trimpath -ldflags '-H=windowsgui' -o dist/deskpulse-agent.exe ./cmd/de
 ## macOS 菜单栏预览
 
 macOS 13 及以上可用 Go 和 Xcode Command Line Tools 构建 Intel／Apple Silicon 通用应用。菜单栏显示 CPU、近似可用内存及设备提供的磁盘 I/O。进程详情限当前用户，TCP 建连测点默认关闭。AI 诊断按需启动，使用钥匙串凭据，可手动导出脱敏指标。
+
+macOS 15 的 Intel 与 Apple Silicon 机器已通过原生菜单栏、明暗主题、进程窗口和隔离钥匙串测试。
 
 ```sh
 bash macos/build.sh
