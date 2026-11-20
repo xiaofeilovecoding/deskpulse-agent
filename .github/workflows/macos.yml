@@ -27,6 +27,7 @@ jobs:
           app="dist/DeskPulse Agent.app"
           executable="$app/Contents/MacOS/deskpulse-agent"
           plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep --strict "$app"
           lipo "$executable" -verify_arch arm64 x86_64
           helper="$app/Contents/Helpers/deskpulse-model"
           lipo "$helper" -verify_arch arm64 x86_64
@@ -35,6 +36,30 @@ jobs:
           "$executable" --check-process-sampler
           "$executable" --check-latency
           "$executable" --check-export | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["schema_version"] == 1 and len(s["metrics"]) == 5 and s["metrics"][0]["value"] == 0.3'
+      - name: Exercise the native menu bar in both languages and themes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import struct
+          import subprocess
+          root = Path(os.environ["RUNNER_TEMP"]) / "deskpulse-macos-ui"
+          executable = Path("dist/DeskPulse Agent.app/Contents/MacOS/deskpulse-agent")
+          for language in ("en", "zh-CN"):
+              output = root / language
+              subprocess.run([executable, "--check-ui", output, language], check=True, timeout=45)
+              light, dark = ((output / f"{theme}.png").read_bytes() for theme in ("light", "dark"))
+              assert light != dark
+              for file in (light, dark):
+                  assert file[:8] == b"\x89PNG\r\n\x1a\n"
+                  assert all(size >= 300 for size in struct.unpack(">II", file[16:24]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskpulse-macos-ui-${{ matrix.runner }}
+          path: ${{ runner.temp }}/deskpulse-macos-ui
+          if-no-files-found: error
       - name: Package the preview
         if: matrix.runner == 'macos-15'
         run: ditto -c -k --keepParent "dist/DeskPulse Agent.app" dist/deskpulse-agent-macos-universal.zip

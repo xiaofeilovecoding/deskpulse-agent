@@ -138,6 +138,9 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 @property(strong) NSDate *lastExportDate;
 @property(strong) NSButton *appearanceButton;
 @property BOOL dark;
+@property(copy) NSString *uiCheckDirectory;
+@property BOOL uiCheckChinese;
+- (BOOL)checkMenuUI;
 @end
 
 @implementation DeskPulse
@@ -156,13 +159,14 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     (void)note;
-    self.chinese = [[NSLocale preferredLanguages].firstObject hasPrefix:@"zh"];
-    self.dark = [NSUserDefaults.standardUserDefaults boolForKey:@"darkAppearance"];
+    BOOL checkingUI = self.uiCheckDirectory != nil;
+    self.chinese = checkingUI ? self.uiCheckChinese : [[NSLocale preferredLanguages].firstObject hasPrefix:@"zh"];
+    self.dark = !checkingUI && [NSUserDefaults.standardUserDefaults boolForKey:@"darkAppearance"];
     [self applyAppearance];
     self.cpuHistory = [NSMutableArray array];
     self.model = [[DPModelPanel alloc] initWithChinese:self.chinese];
     self.diagnosticSamples = [NSMutableArray array];
-    NSString *configuredTargets = [NSUserDefaults.standardUserDefaults stringForKey:@"networkTargets"] ?: @"";
+    NSString *configuredTargets = checkingUI ? @"" : ([NSUserDefaults.standardUserDefaults stringForKey:@"networkTargets"] ?: @"");
     self.targets = DPNormalizeTargets(configuredTargets, NULL) ?: @[];
     self.latency = [NSMutableDictionary dictionary];
     self.status = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
@@ -235,6 +239,17 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
     NSButton *quit = [NSButton buttonWithTitle:[self zh:@"退出" en:@"Quit"]
         target:NSApp action:@selector(terminate:)];
     [stack addArrangedSubview:quit];
+    if (checkingUI) {
+        self.cpuLabel.stringValue = @"CPU · 24%";
+        self.memoryLabel.stringValue = [self zh:@"可用内存 · 6.8 GiB" en:@"Available memory · 6.8 GiB"];
+        self.diskLabel.stringValue = @"I/O · ↓ 2.4 MB/s  ↑ 0.8 MB/s";
+        self.networkLabel.stringValue = [self zh:@"延迟 · 未配置" en:@"Latency · No targets configured"];
+        self.diagnosisLabel.stringValue = [self zh:@"持续卡顿时，可运行 AI 诊断。" en:@"If a slowdown persists, run AI diagnosis."];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            exit([self checkMenuUI] ? 0 : 1);
+        });
+        return;
+    }
     [self update];
     self.ticker = [NSTimer scheduledTimerWithTimeInterval:5 target:self
         selector:@selector(onClock:) userInfo:nil repeats:YES];
@@ -258,7 +273,7 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 - (void)toggleAppearance:(id)sender {
     (void)sender;
     self.dark = !self.dark;
-    [NSUserDefaults.standardUserDefaults setBool:self.dark forKey:@"darkAppearance"];
+    if (!self.uiCheckDirectory) [NSUserDefaults.standardUserDefaults setBool:self.dark forKey:@"darkAppearance"];
     [self applyAppearance];
 }
 
@@ -412,11 +427,58 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
     if (self.popover.shown) {
         [self.popover close];
     } else {
-        self.popover.animates = !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+        self.popover.animates = !self.uiCheckDirectory && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
         [self.popover showRelativeToRect:self.status.button.bounds
             ofView:self.status.button preferredEdge:NSRectEdgeMinY];
-        [self update];
+        if (!self.uiCheckDirectory) [self update];
     }
+}
+
+// Test the same status item and AppKit view hierarchy used during normal runs.
+- (BOOL)capturePopover:(NSString *)name {
+    NSView *popoverView = self.popover.contentViewController.view;
+    NSView *surface = popoverView.window.contentView ?: popoverView;
+    [surface layoutSubtreeIfNeeded];
+    [surface displayIfNeeded];
+    NSRect bounds = surface.bounds;
+    NSBitmapImageRep *bitmap = [surface bitmapImageRepForCachingDisplayInRect:bounds];
+    if (!bitmap || bitmap.pixelsWide < 300 || bitmap.pixelsHigh < 300) return NO;
+    [surface cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    return [png writeToFile:[self.uiCheckDirectory stringByAppendingPathComponent:name] atomically:YES];
+}
+
+- (BOOL)checkMenuUI {
+    if (!self.status.button.window || !self.status.button.image) {
+        fputs("macOS status item is missing its window or image\n", stderr);
+        return NO;
+    }
+    [self.status.button performClick:nil];
+    if (!self.popover.shown || self.dark || !self.appearanceButton.image ||
+        ![self.appearanceButton.accessibilityLabel isEqualToString:[self appearanceAction]] ||
+        ![self capturePopover:@"light.png"]) {
+        fputs("macOS light popover check failed\n", stderr);
+        return NO;
+    }
+    [self.appearanceButton performClick:nil];
+    if (!self.dark || ![NSApp.appearance.name isEqualToString:NSAppearanceNameDarkAqua] ||
+        ![self.appearanceButton.toolTip isEqualToString:[self appearanceAction]] ||
+        ![self capturePopover:@"dark.png"]) {
+        fputs("macOS dark popover check failed\n", stderr);
+        return NO;
+    }
+    [self.appearanceButton performClick:nil];
+    if (self.dark || ![NSApp.appearance.name isEqualToString:NSAppearanceNameAqua]) {
+        fputs("macOS popover could not switch back to light\n", stderr);
+        return NO;
+    }
+    [self.status.button performClick:nil];
+    if (self.popover.shown) {
+        fputs("macOS status item could not close the popover\n", stderr);
+        return NO;
+    }
+    puts("macOS status item, native popover and both theme actions passed");
+    return YES;
 }
 
 - (void)update {
@@ -522,6 +584,17 @@ int main(int argc, const char *argv[]) {
         NSApplication *app = NSApplication.sharedApplication;
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
         DeskPulse *delegate = [[DeskPulse alloc] init];
+        if (argc == 4 && strcmp(argv[1], "--check-ui") == 0) {
+            delegate.uiCheckDirectory = [NSString stringWithUTF8String:argv[2]];
+            delegate.uiCheckChinese = strcmp(argv[3], "zh-CN") == 0;
+            if (!delegate.uiCheckDirectory.length) return 1;
+            NSError *error = nil;
+            if (![NSFileManager.defaultManager createDirectoryAtPath:delegate.uiCheckDirectory
+                    withIntermediateDirectories:YES attributes:nil error:&error]) {
+                fprintf(stderr, "Could not create UI evidence directory: %s\n", error.localizedDescription.UTF8String);
+                return 1;
+            }
+        }
         app.delegate = delegate;
         [app run];
         (void)delegate;
