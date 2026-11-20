@@ -37,7 +37,7 @@ sudo apt-get install --no-install-recommends -y -qq freerdp3-x11 xvfb
 
 mkdir -p "$scratch/oem" "$scratch/shared" "$scratch/storage"
 cp dist/deskpulse-agent.exe dist/deskpulse-agent-x64.msi "$scratch/oem/"
-cp scripts/windows11-vm/install.bat scripts/windows11-vm/test.ps1 scripts/test-windows-render.ps1 "$scratch/oem/"
+cp scripts/windows11-vm/install.bat scripts/windows11-vm/test.ps1 scripts/windows11-vm/profile.ps1 scripts/test-windows-render.ps1 "$scratch/oem/"
 sed -i 's/\r\?$/\r/' "$scratch/oem/install.bat"
 touch "$scratch/shared/host-ready.txt"
 export PASSWORD="Aa9-$(openssl rand -hex 12)"
@@ -90,4 +90,5 @@ rdp_pid=''
 wait_for rdp-disconnected.json 55
 connect 1360x820
 wait_for rdp-reconnected.json 95
+wait_for resources.json 1100
 wait_for passed.json 100

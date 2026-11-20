@@ -78,7 +78,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/validation/')
     needs: windows
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:

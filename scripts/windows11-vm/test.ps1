@@ -75,6 +75,10 @@ public static class DeskPulseRdpCheck {
         Wait-For { [DeskPulseRdpCheck]::Query(16) -eq 2 -and [DeskPulseRdpCheck]::Query(8) -eq 0 } 120
         & $renderer -Executable $installed -ScratchDirectory $scratch
         Write-Evidence 'rdp-reconnected.json' @{reconnected=$true; rendered=$true}
+        $profile = [scriptblock]::Create((Get-Content -LiteralPath 'C:\OEM\profile.ps1' -Raw))
+        $result = & $profile -Executable $installed -ScratchDirectory $scratch
+        Write-Evidence 'resources.json' $result
+        if (-not $result.budgetPassed) { throw 'DeskPulse exceeded its idle resource thresholds.' }
     } finally {
         Run-Installer ('/x "{0}"' -f $package)
     }
