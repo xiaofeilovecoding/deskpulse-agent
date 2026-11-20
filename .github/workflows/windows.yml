@@ -72,3 +72,27 @@ jobs:
           $hash = (Get-FileHash -LiteralPath dist/deskpulse-agent.exe -Algorithm SHA256).Hash
           Write-Host "x64 executable SHA256 $hash"
           ./scripts/test-windows-render.ps1 -Executable dist/deskpulse-agent.exe -ScratchDirectory $env:RUNNER_TEMP
+
+  windows-11-x64-vm:
+    name: Windows 11 x64 evaluation VM and RDP reconnect
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/validation/')
+    needs: windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deskpulse-agent-windows-x64
+          path: dist
+      - name: Run the x64 Windows VM
+        shell: bash
+        run: bash scripts/windows11-vm/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deskpulse-windows-11-x64-vm-evidence
+          path: ${{ runner.temp }}/deskpulse-win11/shared/*.json
+          if-no-files-found: ignore

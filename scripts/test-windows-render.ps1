@@ -9,9 +9,7 @@ $capture = Join-Path $scratch 'capture'
 $data = Join-Path $scratch 'data'
 $start = [System.Diagnostics.ProcessStartInfo]::new((Resolve-Path -LiteralPath $Executable).Path)
 $start.UseShellExecute = $false
-foreach ($argument in @('--synthetic', '--data-dir', $data, '--capture-dir', $capture)) {
-    $start.ArgumentList.Add($argument)
-}
+$start.Arguments = '--synthetic --data-dir "{0}" --capture-dir "{1}"' -f $data, $capture
 
 $process = [System.Diagnostics.Process]::Start($start)
 try {
