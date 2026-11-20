@@ -114,6 +114,16 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
         @"window_seconds": @5, @"metrics": metrics} options:NSJSONWritingPrettyPrinted error:NULL];
 }
 
+@interface DPMenuSurface : NSView
+@end
+
+@implementation DPMenuSurface
+- (void)drawRect:(NSRect)dirtyRect {
+    [NSColor.windowBackgroundColor setFill];
+    NSRectFill(dirtyRect);
+}
+@end
+
 @interface DeskPulse : NSObject <NSApplicationDelegate>
 @property(strong) NSStatusItem *status;
 @property(strong) NSPopover *popover;
@@ -137,10 +147,12 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 @property(copy) NSArray<NSDictionary *> *lastExportMetrics;
 @property(strong) NSDate *lastExportDate;
 @property(strong) NSButton *appearanceButton;
+@property(strong) NSButton *processButton;
 @property BOOL dark;
 @property(copy) NSString *uiCheckDirectory;
 @property BOOL uiCheckChinese;
 - (BOOL)checkMenuUI;
+- (void)checkProcessUIUntil:(NSDate *)deadline;
 @end
 
 @implementation DeskPulse
@@ -177,9 +189,9 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
     self.status.button.action = @selector(toggle:);
     self.popover = [[NSPopover alloc] init];
     self.popover.behavior = NSPopoverBehaviorTransient;
-    self.popover.contentSize = NSMakeSize(330, 344);
+    self.popover.contentSize = NSMakeSize(330, 298);
     NSViewController *panel = [[NSViewController alloc] init];
-    panel.view = [[NSView alloc] initWithFrame:NSMakeRect(0,0,330,344)];
+    panel.view = [[DPMenuSurface alloc] initWithFrame:NSMakeRect(0, 0, 330, 298)];
     self.popover.contentViewController = panel;
 
     NSStackView *stack = [[NSStackView alloc] initWithFrame:NSZeroRect];
@@ -195,17 +207,27 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
     ]];
     NSTextField *title = [NSTextField labelWithString:@"DeskPulse Agent"];
     title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
     self.appearanceButton = [NSButton buttonWithTitle:@"" target:self action:@selector(toggleAppearance:)];
     self.appearanceButton.imagePosition = NSImageOnly;
     self.appearanceButton.controlSize = NSControlSizeSmall;
-    [self.appearanceButton.widthAnchor constraintEqualToConstant:30].active = YES;
-    [self.appearanceButton.heightAnchor constraintEqualToConstant:26].active = YES;
+    self.appearanceButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self applyAppearance];
-    NSStackView *header = [NSStackView stackViewWithViews:@[title, self.appearanceButton]];
-    header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    header.spacing = 12;
-    [title setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [header.widthAnchor constraintEqualToConstant:294].active = YES;
+    NSView *header = [[NSView alloc] initWithFrame:NSZeroRect];
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+    [header addSubview:title];
+    [header addSubview:self.appearanceButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [header.widthAnchor constraintEqualToConstant:294],
+        [header.heightAnchor constraintEqualToConstant:30],
+        [title.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
+        [title.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:self.appearanceButton.leadingAnchor constant:-12],
+        [self.appearanceButton.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],
+        [self.appearanceButton.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
+        [self.appearanceButton.widthAnchor constraintEqualToConstant:30],
+        [self.appearanceButton.heightAnchor constraintEqualToConstant:26]
+    ]];
     [stack addArrangedSubview:header];
     self.cpuLabel = [self row:@"CPU · —" in:stack];
     self.memoryLabel = [self row:[self zh:@"内存 · —" en:@"Memory · —"] in:stack];
@@ -227,6 +249,7 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
     [stack addArrangedSubview:actionRow];
     NSButton *processes = [NSButton buttonWithTitle:[self zh:@"查看进程" en:@"View processes"]
         target:self action:@selector(showProcesses:)];
+    self.processButton = processes;
     NSButton *network = [NSButton buttonWithTitle:[self zh:@"网络目标" en:@"Network targets"]
         target:self action:@selector(configureNetwork:)];
     NSButton *export = [NSButton buttonWithTitle:[self zh:@"导出" en:@"Export"]
@@ -246,7 +269,10 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
         self.networkLabel.stringValue = [self zh:@"延迟 · 未配置" en:@"Latency · No targets configured"];
         self.diagnosisLabel.stringValue = [self zh:@"持续卡顿时，可运行 AI 诊断。" en:@"If a slowdown persists, run AI diagnosis."];
         dispatch_async(dispatch_get_main_queue(), ^{
-            exit([self checkMenuUI] ? 0 : 1);
+            if (![self checkMenuUI]) exit(1);
+            [self.status.button performClick:nil];
+            [self.processButton performClick:nil];
+            [self checkProcessUIUntil:[NSDate dateWithTimeIntervalSinceNow:8.0]];
         });
         return;
     }
@@ -262,7 +288,11 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 }
 
 - (void)applyAppearance {
-    NSApp.appearance = [NSAppearance appearanceNamed:self.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    NSAppearance *appearance = [NSAppearance appearanceNamed:self.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    NSApp.appearance = appearance;
+    self.popover.appearance = appearance;
+    self.popover.contentViewController.view.appearance = appearance;
+    self.popover.contentViewController.view.needsDisplay = YES;
     NSString *label = [self appearanceAction];
     NSString *symbol = self.dark ? @"sun.max" : @"moon";
     self.appearanceButton.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:label];
@@ -436,14 +466,16 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 
 // Test the same status item and AppKit view hierarchy used during normal runs.
 - (BOOL)capturePopover:(NSString *)name {
-    NSView *popoverView = self.popover.contentViewController.view;
-    NSView *surface = popoverView.window.contentView ?: popoverView;
+    NSView *surface = self.popover.contentViewController.view;
     [surface layoutSubtreeIfNeeded];
     [surface displayIfNeeded];
     NSRect bounds = surface.bounds;
     NSBitmapImageRep *bitmap = [surface bitmapImageRepForCachingDisplayInRect:bounds];
-    if (!bitmap || bitmap.pixelsWide < 300 || bitmap.pixelsHigh < 300) return NO;
+    if (!bitmap || bitmap.pixelsWide < 300 || bitmap.pixelsHigh < 290) return NO;
     [surface cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+    NSColor *background = [[bitmap colorAtX:4 y:4] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!background || background.alphaComponent < .97 ||
+        (self.dark ? background.redComponent > .4 : background.redComponent < .75)) return NO;
     NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     return [png writeToFile:[self.uiCheckDirectory stringByAppendingPathComponent:name] atomically:YES];
 }
@@ -477,8 +509,23 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
         fputs("macOS status item could not close the popover\n", stderr);
         return NO;
     }
-    puts("macOS status item, native popover and both theme actions passed");
+
     return YES;
+}
+
+- (void)checkProcessUIUntil:(NSDate *)deadline {
+    if ([self.processWindow hasVisibleProcessRows] && !self.popover.shown) {
+        [self.processWindow close];
+        puts("macOS status item, native popover, both theme actions and the process panel passed");
+        exit(0);
+    }
+    if (deadline.timeIntervalSinceNow <= 0) {
+        fputs("macOS processes did not open from the menu and display sampled rows\n", stderr);
+        exit(1);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        [self checkProcessUIUntil:deadline];
+    });
 }
 
 - (void)update {
@@ -546,6 +593,9 @@ static NSData *encodeExport(NSArray<NSDictionary *> *metrics, NSDate *date) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 2 && strcmp(argv[1], "--check-model-keychain") == 0) {
+            return DPCheckModelKeychain() ? 0 : 1;
+        }
         if (argc == 2 && strcmp(argv[1], "--check-process-sampler") == 0) {
             return DPCheckProcessSampler() ? 0 : 1;
         }

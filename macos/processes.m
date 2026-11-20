@@ -111,6 +111,14 @@ static NSString *identity(DPProcess *row) {
     [self onClock:nil];
 }
 
+- (BOOL)hasVisibleProcessRows {
+    return self.panel.isVisible && self.outline.numberOfRows > 0;
+}
+
+- (void)close {
+    [self.panel close];
+}
+
 - (void)createPanel {
     NSRect frame = NSMakeRect(0, 0, 560, 400);
     self.panel = [[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled |

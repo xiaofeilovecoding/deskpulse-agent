@@ -5,3 +5,5 @@
 - (void)configure;
 - (void)diagnose:(NSArray<NSDictionary *> *)samples;
 @end
+
+BOOL DPCheckModelKeychain(void);

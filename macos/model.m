@@ -81,6 +81,23 @@ static BOOL storeKey(NSDictionary *profile, NSString *key) {
     return status == errSecSuccess;
 }
 
+BOOL DPCheckModelKeychain(void) {
+    NSString *base = [NSString stringWithFormat:@"https://%@.invalid", NSUUID.UUID.UUIDString];
+    NSDictionary *profile = modelProfile(1, base, @"test-model");
+    NSDictionary *otherProtocol = modelProfile(2, base, @"test-model");
+    NSDictionary *otherEndpoint = modelProfile(1, [base stringByAppendingString:@"/second"], @"test-model");
+    if (!profile || !otherProtocol || !otherEndpoint) return NO;
+
+    BOOL verified = storeKey(profile, @"deskpulse-test-initial") &&
+        [readKey(profile) isEqualToString:@"deskpulse-test-initial"] &&
+        readKey(otherProtocol) == nil && readKey(otherEndpoint) == nil &&
+        storeKey(profile, @"deskpulse-test-replacement") &&
+        [readKey(profile) isEqualToString:@"deskpulse-test-replacement"] &&
+        !storeKey(profile, @"invalid\nkey");
+    OSStatus deleted = SecItemDelete((__bridge CFDictionaryRef)keychainAccount(profile));
+    return verified && deleted == errSecSuccess && readKey(profile) == nil;
+}
+
 @interface DPModelPanel ()
 @property BOOL chinese;
 @property BOOL running;

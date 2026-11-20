@@ -36,6 +36,21 @@ jobs:
           "$executable" --check-process-sampler
           "$executable" --check-latency
           "$executable" --check-export | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["schema_version"] == 1 and len(s["metrics"]) == 5 and s["metrics"][0]["value"] == 0.3'
+      - name: Verify synthetic credentials in an isolated Keychain
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/deskpulse-test.keychain-db"
+          prior=$(security default-keychain -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
+          password=$(openssl rand -hex 20)
+          cleanup() {
+            if [[ -n "$prior" ]]; then security default-keychain -d user -s "$prior"; fi
+            security delete-keychain "$keychain"
+          }
+          security create-keychain -p "$password" "$keychain"
+          trap cleanup EXIT
+          security unlock-keychain -p "$password" "$keychain"
+          security default-keychain -d user -s "$keychain"
+          "dist/DeskPulse Agent.app/Contents/MacOS/deskpulse-agent" --check-model-keychain
       - name: Exercise the native menu bar in both languages and themes
         shell: bash
         run: |
@@ -53,7 +68,8 @@ jobs:
               assert light != dark
               for file in (light, dark):
                   assert file[:8] == b"\x89PNG\r\n\x1a\n"
-                  assert all(size >= 300 for size in struct.unpack(">II", file[16:24]))
+                  width, height = struct.unpack(">II", file[16:24])
+                  assert width >= 300 and height >= 290
           PY
       - uses: actions/upload-artifact@v4
         with:
