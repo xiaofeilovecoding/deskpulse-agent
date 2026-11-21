@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -49,6 +50,8 @@ type State struct {
 	Destination string
 	Active      map[string]string
 	Outbox      []Event
+	NextAttempt time.Time `json:",omitzero"`
+	Failures    int       `json:",omitempty"`
 }
 
 type Recorder struct {
@@ -58,15 +61,15 @@ type Recorder struct {
 	client      *http.Client
 	state       State
 	counts      map[string]int
-	next        time.Time
-	retries     int
 }
+
+const eventLifetime = 24 * time.Hour
 
 func Open(dir, endpoint string) (*Recorder, error) {
 	target := strings.TrimSpace(endpoint)
 	if target != "" {
 		u, err := url.Parse(target)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.ForceQuery || u.RawQuery != "" || strings.Contains(target, "#") {
 			return nil, fmt.Errorf("webhook requires an HTTPS URL without query, fragment or credentials")
 		}
 	}
@@ -90,7 +93,10 @@ func Open(dir, endpoint string) (*Recorder, error) {
 	if r.state.Destination != r.destination {
 		r.state.Outbox = nil
 		r.state.Destination = r.destination
+		r.state.NextAttempt = time.Time{}
+		r.state.Failures = 0
 	}
+	r.state.Failures = max(0, min(r.state.Failures, 8))
 	if r.state.Active == nil {
 		r.state.Active = make(map[string]string)
 	}
@@ -204,19 +210,29 @@ func (r *Recorder) append(event Event) error {
 }
 
 func (r *Recorder) Deliver(ctx context.Context, now time.Time) error {
-	if r.target == "" || r.next.After(now) || len(r.state.Outbox) == 0 {
+	if r.target == "" || len(r.state.Outbox) == 0 {
+		return nil
+	}
+	// Expire queued events even during a receiver-wide retry delay.
+	expired := 0
+	for _, event := range r.state.Outbox {
+		if now.Sub(event.ObservedAt) <= eventLifetime {
+			break
+		}
+		expired++
+	}
+	if expired != 0 {
+		previous := r.state.Outbox
+		r.state.Outbox = previous[expired:]
+		if err := r.save(); err != nil {
+			r.state.Outbox = previous
+			return err
+		}
+	}
+	if len(r.state.Outbox) == 0 || r.state.NextAttempt.After(now) {
 		return nil
 	}
 	event := r.state.Outbox[0]
-	consume := func() error {
-		r.state.Outbox = r.state.Outbox[1:]
-		r.retries = 0
-		r.next = now.Add(10 * time.Second)
-		return r.save()
-	}
-	if now.Sub(event.ObservedAt) > 24*time.Hour {
-		return consume()
-	}
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -228,24 +244,50 @@ func (r *Recorder) Deliver(ctx context.Context, now time.Time) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", event.EventID)
 	resp, err := r.client.Do(req)
-	r.retries = min(r.retries+1, 8)
-	r.next = now.Add(time.Duration(1<<r.retries) * 5 * time.Second)
-	if err != nil {
-		return fmt.Errorf("event endpoint unavailable")
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
 	}
-	resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return consume()
-	}
-	if resp.StatusCode == 429 || resp.StatusCode == 503 {
-		header := resp.Header.Get("Retry-After")
-		if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 && seconds <= 86400 {
-			r.next = now.Add(time.Duration(seconds) * time.Second)
-		} else if when, err := http.ParseTime(header); err == nil && when.After(now) {
-			r.next = when
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			previous := r.state.Outbox
+			r.state.Outbox = previous[1:]
+			r.state.NextAttempt = now.Add(10 * time.Second)
+			r.state.Failures = 0
+			if err := r.save(); err != nil {
+				r.state.Outbox = previous
+				return err
+			}
+			return nil
 		}
-	} else if resp.StatusCode < 500 {
-		r.next = now.Add(time.Hour)
 	}
-	return fmt.Errorf("event endpoint returned HTTP %d", resp.StatusCode)
+
+	r.state.Failures = min(r.state.Failures+1, 8)
+	delay := min(time.Duration(1<<r.state.Failures)*5*time.Second, 15*time.Minute)
+	deliveryErr := errors.New("event endpoint unavailable")
+	if err == nil {
+		deliveryErr = fmt.Errorf("event endpoint returned HTTP %d", resp.StatusCode)
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable:
+			delay = retryAfter(resp.Header.Get("Retry-After"), now, delay)
+		case resp.StatusCode < 500:
+			delay = time.Hour
+		}
+	}
+	r.state.NextAttempt = now.Add(delay)
+	if err := r.save(); err != nil {
+		return errors.Join(deliveryErr, errors.New("could not save incident retry state"))
+	}
+	return deliveryErr
+}
+
+func retryAfter(value string, now time.Time, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		return time.Duration(min(seconds, int64(eventLifetime/time.Second))) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		return min(max(when.Sub(now), 0), eventLifetime)
+	}
+	return fallback
 }

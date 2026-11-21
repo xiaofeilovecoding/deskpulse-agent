@@ -35,7 +35,7 @@ jobs:
           "$executable" --sample | python3 -c 'import json,sys; s=json.load(sys.stdin); assert 0 <= s["cpu_used_ratio"] <= 1 and 0 <= s["estimated_available_memory_bytes"] <= s["physical_memory_bytes"]'
           "$executable" --check-process-sampler
           "$executable" --check-latency
-          "$executable" --check-export | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["schema_version"] == 1 and len(s["metrics"]) == 5 and s["metrics"][0]["value"] == 0.3'
+          DESKPULSE_MACOS_TEST_APP="$PWD/$executable" go test ./internal/contracttest -count=1 -v
       - name: Verify synthetic credentials in an isolated Keychain
         shell: bash
         run: |
