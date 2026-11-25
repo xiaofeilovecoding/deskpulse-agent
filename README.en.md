@@ -2,6 +2,10 @@
 
 DeskPulse Agent is a desktop resource monitor and on-demand diagnostic utility. The Windows preview includes a native tray, floating monitor, user-session process view, local findings, opt-in model analysis, read-only metrics export and verified recovery copies of expired app snapshots. It was verified on Windows 10 22H2 and in a Windows 11 24H2 x64 evaluation VM. [Verification scope](docs/preview.md)
 
+Hover to glance at resource use, or click the floating monitor to open the overview. CPU and memory show their last 20 samples on the same 0–100% scale. Open Local diagnosis or Processes to investigate a spike.
+
+<img src="docs/preview-assets/native-overview-en.png" width="336" alt="Windows system overview with sample CPU, memory, disk and latency readings">
+
 ## Build on Windows x64
 
 ```powershell

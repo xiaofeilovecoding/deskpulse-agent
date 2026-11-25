@@ -231,7 +231,7 @@ func (a *App) paintBall() {
 // paintBallInto draws the ball face into a buffer (paint path and capture).
 func (a *App) paintBallInto(b *windowBuffer) {
 	dpi := b.dpi
-	fillRect(b.hdc, rect{0, 0, b.w, b.h}, a.theme.panel())
+	fillRect(b.hdc, rect{0, 0, b.w, b.h}, a.theme.colors().instrument)
 	cx := float64(b.w) / 2
 	cy := float64(b.h) / 2
 	r := min(cx, cy) - float64(scale(1, dpi))
@@ -245,8 +245,8 @@ func (a *App) paintBallInto(b *windowBuffer) {
 		}
 	}
 	box := iconRect(rect{0, 0, b.w, b.h}, scale(29, dpi))
-	drawIcon(b.hdc, "pulse", a.theme.accent(), box)
-	b.finishPill(r, pixelScale, a.theme.muted())
+	drawIcon(b.hdc, "pulse", a.theme.colors().cpuTrace, box)
+	b.finishPill(r, pixelScale, a.theme.colors().grid)
 }
 
 func (a *App) drawAttentionDot(b *windowBuffer, x, y, scale float64) {
@@ -450,25 +450,23 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 	f := a.fontsFor(dpi)
 	fillRect(b.hdc, rect{0, 0, b.w, b.h}, t.panel())
 	nativeScale := float64(dpi) / 96
-	defer b.finishPill(float64(b.h)/2, nativeScale, t.muted())
+	defer b.finishPill(float64(b.h)/2, nativeScale, t.line())
 	start, end, actionX := scale(7, dpi), b.w-scale(hoverActionDIP, dpi), b.w-b.h/2
 	if a.capsuleOpensRight() {
 		start, end, actionX = scale(hoverActionDIP, dpi), b.w-scale(7, dpi), b.h/2
 	}
-	seam := end
+	brand := rect{end, 0, b.w, b.h}
 	if a.capsuleOpensRight() {
-		seam = start
+		brand = rect{0, 0, start, b.h}
 	}
-	if end > start {
-		line(b.hdc, []point{{seam, scale(12, dpi)}, {seam, b.h - scale(12, dpi)}}, t.line(), max(1, scale(1, dpi)))
-	}
+	fillRect(b.hdc, brand, t.colors().instrument)
 	iconSize := scale(23, dpi)
 	actionY := (b.h - iconSize) / 2
 	if end-start >= scale(40, dpi) {
 		actionY = scale(5, dpi)
-		drawText(b.hdc, a.tr("诊断", "Agent"), rect{actionX - b.h/2, scale(29, dpi), actionX + b.h/2, b.h - scale(3, dpi)}, f.Body, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawText(b.hdc, a.tr("诊断", "Check"), rect{actionX - b.h/2, scale(29, dpi), actionX + b.h/2, b.h - scale(3, dpi)}, f.Small, t.colors().onInstrument, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
-	drawIcon(b.hdc, "pulse", t.accent(), rect{actionX - iconSize/2, actionY, actionX + iconSize/2, actionY + iconSize})
+	drawIcon(b.hdc, "pulse", t.colors().cpuTrace, rect{actionX - iconSize/2, actionY, actionX + iconSize/2, actionY + iconSize})
 	mask := a.metricsForCapsule()
 	if len(mask) == 0 || end-start < scale(40*len(mask), dpi) {
 		return
@@ -494,7 +492,7 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 			if snap.Memory != nil {
 				pct = &snap.Memory.Percent
 			}
-			rings[nrings] = ringGlyph{cx, cy, pct, t.accent()}
+			rings[nrings] = ringGlyph{cx, cy, pct, t.colors().memoryInk}
 			nrings++
 		case settings.GPU:
 			label = "GPU"
@@ -506,25 +504,21 @@ func (a *App) paintHoverInto(b *windowBuffer) {
 				drawUnknown(b.hdc, cx, cy, dpi, t.muted())
 			} else {
 				line(b.hdc, []point{{cx - radius, cy}, {cx + radius, cy}}, t.muted(), max(1, scale(1, dpi)))
-				capsuleBars(b.hdc, cx, cy, radius, max(2, scale(2, dpi)), t.accent(), snap.ReadHistory, snap.WriteHistory)
+				capsuleBars(b.hdc, cx, cy, radius, max(2, scale(2, dpi)), t.accent(), t.colors().memoryInk, snap.ReadHistory, snap.WriteHistory)
 			}
 		case settings.Latency:
 			label = a.tr("延迟", "RTT")
 			targets := a.cfg.Get().RTTTargets
-			if a.opts.Synthetic && len(targets) == 0 && len(snap.RTT) > 0 {
-				targets = []string{snap.RTT[0].Target}
-			}
 			state := firstRTTState(snap, targets)
 			if state == winmetrics.StateOK || state == winmetrics.StatePartial {
-				x1, y1 := scale(4, dpi), scale(2, dpi)
-				line(b.hdc, []point{{cx - radius, cy + 2*y1}, {cx - x1, cy}, {cx, cy + y1}, {cx + x1, cy - 2*y1}, {cx + radius, cy - y1}}, t.accent(), max(2, scale(2, dpi)))
+				drawIcon(b.hdc, "network", t.accent(), rect{cx - radius, cy - radius, cx + radius, cy + radius})
 			} else if state != "" && state != winmetrics.StateNoTarget && state != winmetrics.StatePending {
 				drawUnknown(b.hdc, cx, cy, dpi, t.amber())
 			} else {
 				drawUnknown(b.hdc, cx, cy, dpi, t.muted())
 			}
 		}
-		drawText(b.hdc, label, rect{left, scale(29, dpi), right, b.h - scale(3, dpi)}, f.Body, t.text(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawText(b.hdc, label, rect{left, scale(29, dpi), right, b.h - scale(3, dpi)}, f.Small, t.muted(), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
 	if (nrings != 0 || a.attention) && len(b.pix) > 0 && b.bits != 0 {
 		procGdiFlush.Call()
@@ -568,7 +562,7 @@ func drawRingGlyph(b *windowBuffer, glyph ringGlyph, radius, scale float64, base
 					continue
 				}
 			} else if theta < max(0, min(100, *glyph.value))/100 {
-				color, halfWidth = glyph.accent, 1.18*scale
+				color, halfWidth = glyph.accent, 1.65*scale
 			}
 			alpha := max(0, min(1, halfWidth-distance+.5))
 			if alpha == 0 {
@@ -583,7 +577,7 @@ func drawRingGlyph(b *windowBuffer, glyph ringGlyph, radius, scale float64, base
 	}
 }
 
-func capsuleBars(hdc uintptr, x, y, r, thickness int32, accent uint32, read, write []float64) {
+func capsuleBars(hdc uintptr, x, y, r, thickness int32, accent, writeInk uint32, read, write []float64) {
 	peak := float64(512 * 1024)
 	for _, seq := range [][]float64{read, write} {
 		for _, sample := range seq[max(0, len(seq)-5):] {
@@ -601,7 +595,7 @@ func capsuleBars(hdc uintptr, x, y, r, thickness int32, accent uint32, read, wri
 			if i == 0 {
 				line(hdc, []point{{at, y - 1}, {at, y - 1 - height}}, accent, thickness)
 			} else {
-				line(hdc, []point{{at, y + 1}, {at, y + 1 + height}}, rgb(158, 193, 237), thickness)
+				line(hdc, []point{{at, y + 1}, {at, y + 1 + height}}, writeInk, thickness)
 			}
 		}
 	}

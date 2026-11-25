@@ -9,6 +9,8 @@ import (
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/winmetrics"
 )
 
+func testChinese(zh, en string) string { return zh }
+
 func TestReportCopyText(t *testing.T) {
 	r := diagnose.Report{
 		Summary:       "CPU 短时升高。",
@@ -40,22 +42,22 @@ func TestReportCopyText(t *testing.T) {
 func TestFmtDiskPair(t *testing.T) {
 	read := 2.4e6
 	write := 0.8e6
-	if got := fmtDiskPair(&read, &write); got != "读 2.4 · 写 0.8 MB/s" {
+	if got := fmtDiskPair(testChinese, &read, &write); got != "读 2.4 · 写 0.8 MB/s" {
 		t.Fatalf("pair = %q", got)
 	}
-	if got := fmtDiskPair(&read, nil); got != "读 2.4 · 写 — MB/s" {
+	if got := fmtDiskPair(testChinese, &read, nil); got != "读 2.4 · 写 — MB/s" {
 		t.Fatalf("read-only = %q", got)
 	}
-	if got := fmtDiskPair(nil, nil); got != "—" {
+	if got := fmtDiskPair(testChinese, nil, nil); got != "—" {
 		t.Fatalf("empty = %q", got)
 	}
 	zero := 0.0
-	if got := fmtDiskPair(&zero, &zero); got != "读 0 · 写 0 B/s" {
+	if got := fmtDiskPair(testChinese, &zero, &zero); got != "读 0 · 写 0 B/s" {
 		t.Fatalf("zero = %q", got)
 	}
 	big := 3.62e9
 	small := 1024.0
-	if got := fmtDiskPair(&big, &small); got != "读 3.6 · 写 0.0 GB/s" {
+	if got := fmtDiskPair(testChinese, &big, &small); got != "读 3.6 · 写 0.0 GB/s" {
 		t.Fatalf("mixed units = %q", got)
 	}
 }
@@ -68,20 +70,20 @@ func TestFmtLatency(t *testing.T) {
 		RTT:      []winmetrics.RTTTarget{{Target: "www.baidu.com", State: winmetrics.StateOK, AvgMS: &avg}},
 		RTTState: winmetrics.StateOK,
 	}
-	if got := fmtLatency(ok, []string{"www.baidu.com"}); got != "19 ms" {
+	if got := fmtLatency(testChinese, ok, []string{"www.baidu.com"}); got != "19 ms" {
 		t.Fatalf("latency = %q", got)
 	}
-	if got := fmtLatency(ok, []string{"other.invalid"}); got != "—" {
+	if got := fmtLatency(testChinese, ok, []string{"other.invalid"}); got != "—" {
 		t.Fatalf("missing target = %q", got)
 	}
 	unreachable := winmetrics.Snapshot{
 		RTT:      []winmetrics.RTTTarget{{Target: "www.baidu.com", State: winmetrics.StateUnreachable}},
 		RTTState: winmetrics.StateError,
 	}
-	if got := fmtLatency(unreachable, []string{"www.baidu.com"}); got != "超时" {
+	if got := fmtLatency(testChinese, unreachable, []string{"www.baidu.com"}); got != "超时" {
 		t.Fatalf("timeout = %q", got)
 	}
-	if got := fmtLatency(ok, nil); got != "—" {
+	if got := fmtLatency(testChinese, ok, nil); got != "—" {
 		t.Fatalf("no targets = %q", got)
 	}
 }
@@ -172,32 +174,32 @@ func TestChooseDiskRowDegradation(t *testing.T) {
 	read, write := 2.4e6, 0.8e6
 
 	// Wide enough: the design copy.
-	copy := chooseDiskRow(labelW, valueW, 60, 8, &read, &write, "")
+	copy := chooseDiskRow(testChinese, labelW, valueW, 60, 8, &read, &write, "")
 	if copy.Label != "磁盘 I/O" || copy.Value != "读 2.4 · 写 0.8 MB/s" {
 		t.Fatalf("wide = %q/%q", copy.Label, copy.Value)
 	}
 	// Narrow: compact value under the standard label.
-	copy = chooseDiskRow(labelW, valueW, 35, 8, &read, &write, "")
+	copy = chooseDiskRow(testChinese, labelW, valueW, 35, 8, &read, &write, "")
 	if copy.Label != "磁盘 I/O" || copy.Value != "2.4 / 0.8 MB/s" {
 		t.Fatalf("narrow = %q/%q", copy.Label, copy.Value)
 	}
 	// Narrower: compact label too.
-	copy = chooseDiskRow(labelW, valueW, 29, 8, &read, &write, "")
+	copy = chooseDiskRow(testChinese, labelW, valueW, 29, 8, &read, &write, "")
 	if copy.Label != "读 / 写" || copy.Value != "2.4 / 0.8 MB/s" {
 		t.Fatalf("narrower = %q/%q", copy.Label, copy.Value)
 	}
 	// Extremely narrow: value alone, never clipped.
-	copy = chooseDiskRow(labelW, valueW, 21, 8, &read, &write, "")
+	copy = chooseDiskRow(testChinese, labelW, valueW, 21, 8, &read, &write, "")
 	if copy.Label != "" || copy.Value == "" {
 		t.Fatalf("extreme = %q/%q", copy.Label, copy.Value)
 	}
 	// Degraded disk counters replace the value.
-	copy = chooseDiskRow(labelW, valueW, 60, 8, nil, nil, "磁盘计数不可用")
+	copy = chooseDiskRow(testChinese, labelW, valueW, 60, 8, nil, nil, "磁盘计数不可用")
 	if copy.Label != "磁盘 I/O" || copy.Value != "磁盘计数不可用" {
 		t.Fatalf("error = %q/%q", copy.Label, copy.Value)
 	}
 	// Missing sides keep their — placeholders.
-	copy = chooseDiskRow(labelW, valueW, 60, 8, &read, nil, "")
+	copy = chooseDiskRow(testChinese, labelW, valueW, 60, 8, &read, nil, "")
 	if copy.Value != "读 2.4 · 写 — MB/s" {
 		t.Fatalf("missing side = %q", copy.Value)
 	}
@@ -244,5 +246,19 @@ func TestPopupDiskErrorTextFits(t *testing.T) {
 		if labelW+gap+textW > avail {
 			t.Fatalf("dpi %d: disk error text collides with label (label %d + gap %d + text %d > avail %d)", dpi, labelW, gap, textW, avail)
 		}
+	}
+}
+
+func TestEnglishOverviewUnitsAndProbeState(t *testing.T) {
+	english := func(zh, en string) string { return en }
+	read, write := 2.4e6, 0.8e6
+	width := func(v string) int32 { return int32(len(v)) }
+	row := chooseDiskRow(english, width, width, 52, 8, &read, &write, "")
+	if row.Label != "Disk I/O" || row.Value != "Read 2.4 · Write 0.8 MB/s" {
+		t.Fatalf("disk row: %+v", row)
+	}
+	snap := winmetrics.Snapshot{RTT: []winmetrics.RTTTarget{{Target: "example.invalid", State: winmetrics.StateUnreachable}}}
+	if got := fmtLatency(english, snap, []string{"example.invalid"}); got != "Timeout" {
+		t.Fatalf("latency: %q", got)
 	}
 }

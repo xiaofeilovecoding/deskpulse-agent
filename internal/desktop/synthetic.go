@@ -100,6 +100,8 @@ func buildSyntheticSnapshot() winmetrics.Snapshot {
 		Disk: winmetrics.DiskRate{
 			ReadBPS: &read, WriteBPS: &write, TS: now, State: winmetrics.StateOK,
 		},
+		CPUHistory:   []float64{18, 19, 21, 20, 18, 36, 82, 42, 27, 20, 22, 24, 47, 53, 31, 22, 19, 33, 38, 24},
+		MemHistory:   []float64{45, 45, 46, 48, 48, 48, 51, 55, 54, 55, 54, 57, 58, 58, 60, 59, 61, 61, 60, 61},
 		ReadHistory:  []float64{.5e6, 1.2e6, .8e6, 2.0e6, 2.4e6},
 		WriteHistory: []float64{.2e6, .8e6, .4e6, 1.3e6, .8e6},
 		Processes:    processes,

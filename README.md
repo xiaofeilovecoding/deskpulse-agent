@@ -2,6 +2,10 @@
 
 轻量 Windows 桌面监测、按需 AI 诊断和本机处置。**0.1 Preview** 面向 Windows x64，已在 Windows 10 22H2 和 Windows 11 24H2 评估虚拟机验证。运行时以普通用户启动。 [验证范围](docs/preview.md)
 
+悬停看指标，单击悬浮球打开系统概览。CPU 和内存曲线显示最近 20 个采样点，两条曲线共用 0–100% 刻度。发现异常时，直接打开本机诊断或进程列表。
+
+<img src="docs/preview-assets/native-overview.png" width="336" alt="Windows 系统概览，合成示例展示 CPU、内存、磁盘与延迟">
+
 ## 当前可用
 
 - 原生托盘、可拖动的悬浮球和图形胶囊。托盘可以分别设置 CPU、内存、磁盘 I/O、延迟和设备支持时的 GPU 显示与采集。GPU 只在监测窗口或胶囊打开时取样。
@@ -10,7 +14,7 @@
 - 手动导出只读 `metrics-v1.json`、本地匿名 CPU 与内存异常记录，以及通过显式 `--event-webhook` 配置的 HTTPS 事件投递。
 - 可以预览、归档和恢复 DeskPulse 自己的过期诊断快照。选择另一数据盘时，副本校验通过后才移除来源快照。 [发布状态](docs/preview.md)
 
-![Windows 原生悬浮胶囊，合成数据](docs/preview-assets/native-capsule.png)
+<img src="docs/preview-assets/native-capsule.png" width="336" alt="Windows 原生悬浮胶囊，合成数据">
 
 ## 构建
 

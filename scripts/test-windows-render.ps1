@@ -27,7 +27,7 @@ try {
 }
 
 foreach ($scale in @('100%', '125%', '150%', '200%')) {
-    foreach ($frame in @('ball.png', 'hover.png', 'settings-deepseek.png', 'analysis-details.png')) {
+    foreach ($frame in @('ball.png', 'hover.png', 'popup.png', 'settings-deepseek.png', 'analysis-details.png')) {
         $path = Join-Path $capture "$scale/$frame"
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing capture $path" }
         if ((Get-Item -LiteralPath $path).Length -le 8) { throw "Empty capture $path" }

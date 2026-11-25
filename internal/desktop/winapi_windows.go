@@ -42,6 +42,7 @@ var (
 	procGetWindowTextW         = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLengthW   = user32.NewProc("GetWindowTextLengthW")
 	procSetFocus               = user32.NewProc("SetFocus")
+	procGetKeyState            = user32.NewProc("GetKeyState")
 	procGetFocus               = user32.NewProc("GetFocus")
 	procLoadCursorW            = user32.NewProc("LoadCursorW")
 	procLoadIconW              = user32.NewProc("LoadIconW")

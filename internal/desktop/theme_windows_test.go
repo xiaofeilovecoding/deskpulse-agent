@@ -96,6 +96,63 @@ func TestSettingsHeaderNativeControls(t *testing.T) {
 	}
 }
 
+// Exercise the native input and paint paths together in a work area short
+// enough that the action row can be reached only by scrolling.
+func TestScrolledOverviewActions(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	a, err := newApp(Options{DataDir: t.TempDir(), Synthetic: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregisterDesktopTestClass(t)
+	activeApp = a
+	defer a.shutdown()
+	if err := a.createWindows(); err != nil {
+		t.Fatal(err)
+	}
+	for _, dpi := range []uint32{96, 120, 144, 192} {
+		a.captureDPI, a.panelDPI = dpi, dpi
+		w, h := scale(popupWDIP, dpi), scale(240, dpi)
+		moveWindow(a.panel, -32000, -32000, w, h)
+		a.popupScroll, a.panelFocus = 0, -1
+		a.renderWindow(a.panel, a.paintPopupInto)
+		a.handlePanel(wmMouseWheel, uintptr(uint32(0xff88)<<16), 0) // one downward notch
+		if a.popupScroll <= 0 {
+			t.Fatalf("dpi %d: wheel did not scroll down", dpi)
+		}
+		a.renderWindow(a.panel, a.paintPopupInto)
+		a.handlePopupKey(0x09)
+		a.renderWindow(a.panel, a.paintPopupInto)
+		a.handlePopupKey(0x09)
+		a.renderWindow(a.panel, a.paintPopupInto)
+		if a.panelHits[a.panelFocus].Action != paAnalyze {
+			t.Fatalf("dpi %d: keyboard lost the primary action", dpi)
+		}
+		y := scale(288, dpi) - a.popupScroll
+		if y < 0 || y >= h {
+			t.Fatalf("dpi %d: focused action is outside the client", dpi)
+		}
+		for _, tc := range []struct {
+			x      int
+			action popupAction
+		}{{24, paAnalyze}, {312, paProcess}} {
+			matches := 0
+			for _, hit := range a.panelHits {
+				if pointIn(scale(tc.x, dpi), y, hit.Rect) {
+					if hit.Action != tc.action {
+						t.Fatalf("dpi %d: wrong action at %d", dpi, tc.x)
+					}
+					matches++
+				}
+			}
+			if matches != 1 {
+				t.Fatalf("dpi %d: button edge at %d has %d targets", dpi, tc.x, matches)
+			}
+		}
+	}
+}
+
 func unregisterDesktopTestClass(t *testing.T) {
 	t.Helper()
 	name, err := syscall.UTF16PtrFromString(windowClassName)

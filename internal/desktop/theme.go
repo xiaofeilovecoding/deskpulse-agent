@@ -5,24 +5,28 @@ package desktop
 import "github.com/xiaofeilovecoding/deskpulse-agent/internal/settings"
 
 type palette struct {
-	base, surface, border       uint32
-	foreground, secondary       uint32
-	primary, onPrimary, caution uint32
+	base, surface, border                                            uint32
+	foreground, secondary                                            uint32
+	primary, onPrimary, caution                                      uint32
+	instrument, grid, onInstrument, cpuTrace, memoryTrace, memoryInk uint32
 }
 
 var lightPalette = palette{
+	instrument: rgb(25, 57, 53), grid: rgb(53, 85, 79), onInstrument: rgb(240, 250, 245), cpuTrace: rgb(153, 238, 208), memoryTrace: rgb(167, 207, 255), memoryInk: rgb(54, 93, 147),
 	base: rgb(255, 255, 255), surface: rgb(247, 249, 249), border: rgb(217, 225, 224),
 	foreground: rgb(26, 36, 35), secondary: rgb(82, 99, 96),
 	primary: rgb(32, 94, 83), onPrimary: rgb(255, 255, 255), caution: rgb(133, 74, 15),
 }
 
 var darkPalette = palette{
+	instrument: rgb(33, 61, 57), grid: rgb(70, 97, 92), onInstrument: rgb(239, 251, 244), cpuTrace: rgb(153, 238, 208), memoryTrace: rgb(167, 207, 255), memoryInk: rgb(167, 207, 255),
 	base: rgb(25, 30, 30), surface: rgb(34, 42, 42), border: rgb(63, 75, 75),
 	foreground: rgb(238, 243, 241), secondary: rgb(168, 185, 181),
 	primary: rgb(156, 222, 203), onPrimary: rgb(24, 49, 43), caution: rgb(242, 195, 125),
 }
 
 var contrastPalette = palette{
+	instrument: rgb(0, 0, 0), grid: rgb(255, 255, 255), onInstrument: rgb(255, 255, 255), cpuTrace: rgb(255, 255, 255), memoryTrace: rgb(255, 255, 128), memoryInk: rgb(255, 255, 128),
 	base: rgb(0, 0, 0), surface: rgb(0, 0, 0), border: rgb(255, 255, 255),
 	foreground: rgb(255, 255, 255), secondary: rgb(230, 230, 230),
 	primary: rgb(255, 255, 255), onPrimary: rgb(0, 0, 0), caution: rgb(255, 255, 128),

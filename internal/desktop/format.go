@@ -63,19 +63,20 @@ type DiskRowCopy struct {
 // value → the value alone. measureLabel uses the small font, measureValue the
 // readout font of the calling page. errText (non-empty on degraded states)
 // replaces the value.
-func chooseDiskRow(measureLabel func(string) int32, measureValue func(string) int32, avail, gapPX int32, read, write *float64, errText string) DiskRowCopy {
+func chooseDiskRow(tr func(string, string) string, measureLabel func(string) int32, measureValue func(string) int32, avail, gapPX int32, read, write *float64, errText string) DiskRowCopy {
+	label := tr("磁盘 I/O", "Disk I/O")
 	if errText != "" {
-		if measureLabel("磁盘 I/O")+gapPX+measureValue(errText) <= avail {
-			return DiskRowCopy{Label: "磁盘 I/O", Value: errText}
+		if measureLabel(label)+gapPX+measureValue(errText) <= avail {
+			return DiskRowCopy{Label: label, Value: errText}
 		}
 		return DiskRowCopy{Label: "", Value: errText}
 	}
-	full := fmtDiskPair(read, write)
+	full := fmtDiskPair(tr, read, write)
 	compact := fmtDiskPairCompact(read, write)
 	for _, c := range []DiskRowCopy{
-		{Label: "磁盘 I/O", Value: full},
-		{Label: "磁盘 I/O", Value: compact},
-		{Label: "读 / 写", Value: compact},
+		{Label: label, Value: full},
+		{Label: label, Value: compact},
+		{Label: tr("读 / 写", "R / W"), Value: compact},
 		{Label: "", Value: compact},
 		{Label: "", Value: full},
 	} {
@@ -95,7 +96,7 @@ func chooseDiskRow(measureLabel func(string) int32, measureValue func(string) in
 // fmtDiskPair renders "读 2.4 · 写 0.8 MB/s" choosing one decimal unit that
 // covers both sides (the design sample uses MB/s). A missing side shows —;
 // both missing shows a single —.
-func fmtDiskPair(read, write *float64) string {
+func fmtDiskPair(tr func(string, string) string, read, write *float64) string {
 	if read == nil && write == nil {
 		return "—"
 	}
@@ -108,7 +109,7 @@ func fmtDiskPair(read, write *float64) string {
 		max = *write
 	}
 	unit, factor := rateUnit(max)
-	return "读 " + rateValue(read, factor) + " · 写 " + rateValue(write, factor) + " " + unit
+	return tr("读 ", "Read ") + rateValue(read, factor) + tr(" · 写 ", " · Write ") + rateValue(write, factor) + " " + unit
 }
 
 func rateUnit(maxBPS float64) (string, float64) {
@@ -145,7 +146,7 @@ func rateValue(v *float64, factor float64) string {
 
 // fmtLatency renders the first RTT target per spec. Missing samples are —,
 // unreachable targets show their short state text.
-func fmtLatency(snap winmetrics.Snapshot, targets []string) string {
+func fmtLatency(tr func(string, string) string, snap winmetrics.Snapshot, targets []string) string {
 	if len(targets) == 0 || snap.RTTState == winmetrics.StateNoTarget {
 		return "—"
 	}
@@ -166,20 +167,20 @@ func fmtLatency(snap winmetrics.Snapshot, targets []string) string {
 		}
 		return "—"
 	case winmetrics.StateUnreachable:
-		return "超时"
+		return tr("超时", "Timeout")
 	case winmetrics.StateDNSError:
-		return "DNS 错误"
+		return tr("DNS 错误", "DNS error")
 	case winmetrics.StatePermissionError:
-		return "权限受限"
+		return tr("权限受限", "Permission denied")
 	case winmetrics.StateUnsupported:
-		return "IPv6 不支持"
+		return tr("IPv6 不支持", "IPv6 unsupported")
 	case winmetrics.StatePending:
 		return "—"
 	default:
 		if t.Message != "" {
 			return t.Message
 		}
-		return "探测失败"
+		return tr("探测失败", "Probe failed")
 	}
 }
 

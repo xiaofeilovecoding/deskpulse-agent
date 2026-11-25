@@ -164,6 +164,7 @@ func (a *App) renderWindow(hwnd uintptr, draw func(b *windowBuffer)) *windowBuff
 // Microsoft YaHei UI. Mixed-CJK readouts take the YaHei variant so CJK and
 // Latin glyphs stay one size.
 type fontSet struct {
+	Display       uintptr // Large percentage readouts on the overview
 	Title         uintptr // Segoe UI Semibold 17 — Latin titles (DeskPulse Agent)
 	TitleCJK      uintptr // Microsoft YaHei UI 17 — CJK titles (AI 分析/进程/设置)
 	Value         uintptr // Segoe UI Semibold 16 — Latin/numeric readouts
@@ -184,6 +185,7 @@ const (
 
 func newFontSet(dpi uint32) *fontSet {
 	return &fontSet{
+		Display:       makeFont(dpi, 30, fwSemiBold, faceLatin),
 		Title:         makeFont(dpi, 17, fwSemiBold, faceLatin),
 		TitleCJK:      makeFont(dpi, 17, fwSemiBold, faceCJK),
 		Value:         makeFont(dpi, 16, fwSemiBold, faceLatin),
@@ -225,6 +227,7 @@ func (f *fontSet) valueSmallFont(text string) uintptr {
 }
 
 func (f *fontSet) delete() {
+	deleteFont(f.Display)
 	deleteFont(f.Title)
 	deleteFont(f.TitleCJK)
 	deleteFont(f.Value)

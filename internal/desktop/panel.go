@@ -3,23 +3,15 @@
 package desktop
 
 import (
-	"fmt"
-
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/settings"
 	"github.com/xiaofeilovecoding/deskpulse-agent/internal/winmetrics"
 )
 
-// Popup geometry in DIP at 96 DPI (from the spec table): 336×326 window,
-// 20 DIP margins, 40 DIP title row, four 39 DIP readout rows, a 40 DIP
-// primary button and a single secondary action below it.
+// Fixed DIP footprint shared by the anchor, capture and scroll paths.
 const (
 	popupWDIP   = 336
 	popupHDIP   = 326
 	popupMargin = 20
-	popupTitleH = 40
-	popupRowH   = 39
-	popupBtnH   = 40
-	popupLinkH  = 30
 )
 
 type popupAction int
@@ -37,38 +29,22 @@ type popupHit struct {
 }
 
 type popupLayout struct {
-	Width, Height int32
-	DPI           uint32
-	ContentH      int32
-	Title         rect
-	Gear          rect
-	Rows          [4]rect
-	AnalyzeBtn    rect
-	ProcessLink   rect
-	LinkIcon      rect
-	LinkText      rect
+	Title, Gear, Instrument, Disk, Latency, Analyze, Processes rect
 }
 
-func popupLayoutFor(w, h, dpi int32) popupLayout {
-	s := func(v int) int32 { return scale(v, uint32(dpi)) }
-	l := popupLayout{Width: w, Height: h, DPI: uint32(dpi)}
+// scroll is a physical-pixel offset. Drawing and hit testing share these rectangles.
+func popupLayoutFor(w int32, dpi uint32, scroll int32) popupLayout {
+	s := func(v int) int32 { return scale(v, dpi) }
 	m := s(popupMargin)
-	l.Title = rect{m, s(20), w - m, s(20) + s(popupTitleH)}
-	gearSize := s(28)
-	l.Gear = rect{w - m - gearSize, s(20) + (s(popupTitleH)-gearSize)/2, w - m, s(20) + (s(popupTitleH)+gearSize)/2}
-	y := s(20) + s(popupTitleH) + s(4)
-	for i := range l.Rows {
-		l.Rows[i] = rect{m, y, w - m, y + s(popupRowH)}
-		y += s(popupRowH)
-	}
-	y += s(8)
-	l.AnalyzeBtn = rect{m, y, w - m, y + s(popupBtnH)}
-	y += s(popupBtnH) + s(4)
-	l.ProcessLink = rect{m, y, w - m, y + s(popupLinkH)}
-	// The chevron and text are centered together; measure the text at paint
-	// time and place the icon left of it.
-	l.ContentH = s(popupHDIP)
-	return l
+	row := func(top, bottom int) rect { return rect{m, s(top) - scroll, w - m, s(bottom) - scroll} }
+	title := row(14, 54)
+	gear := row(18, 50)
+	gear.Left = gear.Right - s(32)
+	primary, secondary := row(268, 308), row(268, 308)
+	primary.Right = primary.Left + (primary.Right-primary.Left-s(8))*55/100
+	secondary.Left = primary.Right + s(8)
+	return popupLayout{Title: title, Gear: gear, Instrument: row(66, 170),
+		Disk: row(180, 218), Latency: row(219, 257), Analyze: primary, Processes: secondary}
 }
 
 func (a *App) createPanel() (uintptr, error) {
@@ -226,23 +202,12 @@ func (a *App) handlePanel(message uint32, wparam, lparam uintptr) (bool, uintptr
 		a.handlePopupClick(x, y)
 		return true, 0
 	case wmMouseWheel:
-		pt := screenToClient(a.panel, cursorPos())
-		delta := int16(wparam >> 16)
-		if a.popupScrollMax() > 0 {
-			a.popupWheelRem += int(delta)
-			lines := a.popupWheelRem / 120 * 3
-			a.popupWheelRem -= lines / 3 * 120
-			if lines != 0 {
-				a.popupScroll += int32(lines)
-				if a.popupScroll < 0 {
-					a.popupScroll = 0
-				}
-				if max := a.popupScrollMax(); a.popupScroll > max {
-					a.popupScroll = max
-				}
-				invalidate(a.panel)
-			}
-			_ = pt
+		if limit := a.popupScrollMax(); limit > 0 {
+			a.popupWheelRem += int(int16(wparam >> 16))
+			steps := a.popupWheelRem / 120
+			a.popupWheelRem %= 120
+			a.popupScroll = max(0, min(limit, a.popupScroll-int32(steps)*scale(32, a.panelDPI)))
+			invalidate(a.panel)
 		}
 		return true, 0
 	case wmDpiChanged:
@@ -280,10 +245,21 @@ func (a *App) handlePopupKey(vk uintptr) {
 	}
 	switch vk {
 	case 0x09: // Tab
-		if a.panelFocus < 0 {
+		keyState, _, _ := procGetKeyState.Call(0x10) // VK_SHIFT
+		if keyState&0x8000 != 0 {
+			a.panelFocus = (max(0, a.panelFocus) + n - 1) % n
+		} else if a.panelFocus < 0 {
 			a.panelFocus = 0
 		} else {
 			a.panelFocus = (a.panelFocus + 1) % n
+		}
+		r := a.panelHits[a.panelFocus].Rect
+		height := clientRect(a.panel).Bottom
+		pad := scale(3, a.panelDPI)
+		if r.Top < pad {
+			a.popupScroll = max(0, a.popupScroll+r.Top-pad)
+		} else if r.Bottom > height-pad {
+			a.popupScroll = min(a.popupScrollMax(), a.popupScroll+r.Bottom-height+pad)
 		}
 		invalidate(a.panel)
 	case 0x0D, 0x20: // Enter/Space
@@ -322,175 +298,124 @@ func (a *App) paintPopup() {
 	a.paintWindow(a.panel, a.paintPopupInto)
 }
 
-// paintPopupInto draws the four shared readouts, one primary action and one
-// secondary action. Nothing else lives on the default page.
 func (a *App) paintPopupInto(b *windowBuffer) {
-	dpi := b.dpi
+	dpi, t := b.dpi, a.theme
 	f := a.fontsFor(dpi)
-	t := a.theme
+	s := func(v int) int32 { return scale(v, dpi) }
+	l := popupLayoutFor(b.w, dpi, min(a.popupScroll, a.popupScrollMax()))
+	a.panelHits = []popupHit{{l.Gear, paSettings}, {l.Analyze, paAnalyze}, {l.Processes, paProcess}}
+	snap, cfg := a.source.Latest(), a.cfg.Get()
+	now := a.nowMS()
+	stale := metricStale(snap, now)
+	const left = dtLeft | dtVCenter | dtSingleLine | dtNoPrefix
+	const right = dtRight | dtVCenter | dtSingleLine | dtNoPrefix | dtEndEllipsis
 	fillRect(b.hdc, rect{0, 0, b.w, b.h}, t.bg())
-	l := popupLayoutFor(b.w, b.h, int32(dpi))
-	scroll := a.popupScroll
-	if max := a.popupScrollMax(); scroll > max {
-		scroll = max
-	}
-	shift := func(r rect) rect { return rect{r.Left, r.Top - scroll, r.Right, r.Bottom - scroll} }
-	snap := a.source.Latest()
-	targets := a.cfg.Get().RTTTargets
-	nowMS := a.nowMS()
-	stale := metricStale(snap, nowMS)
 
-	// Title: waveform icon at the left edge of the title row, then the
-	// name; settings gear at the right.
-	iconBox := shift(l.Title)
-	iconBox.Right = iconBox.Left + scale(24, dpi)
-	drawIcon(b.hdc, "pulse", t.accent(), iconRect(iconBox, scale(20, dpi)))
-	nameR := shift(l.Title)
-	nameR.Left += scale(30, dpi)
-	drawText(b.hdc, "DeskPulse Agent", nameR, f.Title, t.text(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
-	if snap.GPU != nil && a.cfg.Get().DisabledMetrics&settings.GPU == 0 && !stale {
-		gpu := nameR
-		gpu.Left += scale(145, dpi)
-		gpu.Right = shift(l.Gear).Left - scale(6, dpi)
-		drawText(b.hdc, "GPU "+fmtPercentInt(snap.GPU), gpu, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
+	mark := rect{l.Title.Left, l.Title.Top + s(3), l.Title.Left + s(34), l.Title.Top + s(37)}
+	roundRect(b.hdc, mark, s(13), t.colors().instrument, t.colors().grid)
+	drawIcon(b.hdc, "pulse", t.colors().cpuTrace, iconRect(mark, s(22)))
+	name := rect{mark.Right + s(10), l.Title.Top, l.Gear.Left - s(8), l.Title.Top + s(23)}
+	drawText(b.hdc, "DeskPulse", name, f.Title, t.text(), left)
+	subtitle := rect{name.Left, name.Bottom, name.Right, l.Title.Bottom}
+	drawText(b.hdc, a.tr("系统概览", "System overview"), subtitle, f.Small, t.muted(), left)
+	if snap.GPU != nil && cfg.DisabledMetrics&settings.GPU == 0 && !stale {
+		gpu := rect{l.Title.Left + s(172), l.Title.Top, l.Gear.Left - s(10), l.Title.Bottom}
+		drawText(b.hdc, "GPU "+fmtPercentInt(snap.GPU), gpu, f.Small, t.muted(), right)
 	}
-	gearFocus := a.popupFocusRect(paSettings, l)
-	drawIcon(b.hdc, "settings", t.muted(), iconRect(shift(l.Gear), scale(18, dpi)))
-	if gearFocus {
-		a.focusBorder(b, shift(l.Gear), dpi)
-	}
+	roundRect(b.hdc, l.Gear, s(10), t.panel(), t.line())
+	drawIcon(b.hdc, "settings", t.muted(), iconRect(l.Gear, s(17)))
 
-	values := [4]struct {
-		label string
-		text  string
-		color uint32
-	}{
-		{"CPU", fmtPercentInt(snap.CPU), t.text()},
-		{a.tr("内存", "Memory"), "—", t.text()},
-		{"", "", t.text()},
-		{a.tr("延迟", "Latency"), fmtLatency(snap, targets), t.status(firstRTTState(snap, targets))},
-	}
+	colors := t.colors()
+	card := l.Instrument
+	roundRect(b.hdc, card, s(20), colors.instrument, colors.grid)
+	mid := (card.Left + card.Right) / 2
+	fillRect(b.hdc, rect{mid, card.Top + s(14), mid + s(1), card.Bottom - s(14)}, colors.grid)
+	var memory *float64
 	if snap.Memory != nil {
-		values[1].text = fmt.Sprintf("%.0f%%", snap.Memory.Percent)
+		memory = &snap.Memory.Percent
 	}
-	if stale {
-		values[0].color = t.muted()
-		values[1].color = t.muted()
-	}
-	if latencyStale(snap, targets, nowMS) {
-		values[3].color = t.muted()
-	}
-	for i, v := range values {
-		if i == 2 {
-			continue // disk row is laid out below with measured fit
+	for _, metric := range []struct {
+		x, end  int32
+		label   string
+		value   *float64
+		samples []float64
+		ink     uint32
+	}{
+		{card.Left, mid, "CPU", snap.CPU, snap.CPUHistory, colors.cpuTrace},
+		{mid, card.Right, a.tr("内存", "Memory"), memory, snap.MemHistory, colors.memoryTrace},
+	} {
+		x, end := metric.x+s(15), metric.end-s(15)
+		header := rect{x, card.Top + s(8), end, card.Top + s(30)}
+		drawText(b.hdc, metric.label, header, f.Small, metric.ink, left)
+		if stale && metric.value != nil {
+			drawText(b.hdc, a.tr("上次值", "Last value"), header, f.Small, colors.onInstrument, right)
 		}
-		r := shift(l.Rows[i])
-		drawText(b.hdc, v.label, r, f.Body, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
-		vFont := f.valueFont(v.text)
-		valueW, _ := measureText(b.hdc, v.text, vFont)
-		vr := r
-		vr.Right -= scale(2, dpi)
-		drawText(b.hdc, v.text, vr, vFont, v.color, dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
-		// 上次值 hint in muted small text left of the stale reading.
-		if (stale && i != 3) || (i == 3 && latencyStale(snap, targets, nowMS)) {
-			hr := vr
-			hr.Right -= int32(valueW) + scale(6, dpi)
-			drawText(b.hdc, a.tr("上次值", "Last value"), hr, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
-		}
-		if i < len(values)-1 {
-			line := rect{r.Left, r.Bottom, r.Right, r.Bottom + 1}
-			fillRect(b.hdc, line, t.line())
+		value := rect{x, card.Top + s(26), end, card.Top + s(68)}
+		drawText(b.hdc, fmtPercentInt(metric.value), value, f.Display, colors.onInstrument, left)
+		plot := rect{x, card.Top + s(68), end, card.Bottom - s(13)}
+		fillRect(b.hdc, rect{plot.Left, plot.Bottom, plot.Right, plot.Bottom + s(1)}, colors.grid)
+		if metric.value != nil {
+			drawLoadHistory(b.hdc, plot, metric.samples, metric.ink, dpi)
 		}
 	}
 
-	// Disk row: choose a copy that fits the real widths with ≥8 DIP
-	// between label and value — degraded text, large rates and missing
-	// sides all degrade by copy, never by overlaying or clipping.
-	rowColor := t.text()
-	if stale {
-		rowColor = t.muted()
-	}
 	errText := ""
+	diskInk := t.text()
 	if snap.Disk.State == winmetrics.StateError {
-		errText = "磁盘计数不可用"
-		rowColor = t.amber()
+		errText, diskInk = a.tr("计数不可用", "Counters unavailable"), t.amber()
 	}
-	m := scale(popupMargin, dpi)
-	avail := b.w - 2*m
-	disk := chooseDiskRow(
-		func(s string) int32 { w, _ := measureText(b.hdc, s, f.Small); return int32(w) },
-		func(s string) int32 { w, _ := measureText(b.hdc, s, f.valueFont(s)); return int32(w) },
-		avail, scale(8, dpi),
-		snap.Disk.ReadBPS, snap.Disk.WriteBPS, errText,
-	)
-	r2 := shift(l.Rows[2])
-	if disk.Label != "" {
-		drawText(b.hdc, disk.Label, r2, f.Body, t.muted(), dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
+	latencyOld := latencyStale(snap, cfg.RTTTargets, now)
+	// Put stale hints on a separate baseline so long rates and translated labels still fit.
+	detail := func(r rect, label, value string, ink uint32, old bool) {
+		labelR := r
+		if old && value != "—" {
+			labelR.Bottom -= s(13)
+			hint := rect{r.Left, labelR.Bottom - s(2), r.Right, r.Bottom}
+			drawText(b.hdc, a.tr("上次值", "Last value"), hint, f.Small, t.muted(), left)
+		}
+		drawText(b.hdc, label, labelR, f.Body, t.muted(), left)
+		labelW, _ := measureText(b.hdc, label, f.Body)
+		vr := r
+		if label != "" {
+			vr.Left += labelW + s(8)
+		}
+		drawText(b.hdc, value, vr, f.valueFont(value), ink, right)
 	}
-	diskFont := f.valueFont(disk.Value)
-	diskW, _ := measureText(b.hdc, disk.Value, diskFont)
-	vr2 := r2
-	vr2.Right -= scale(2, dpi)
-	drawText(b.hdc, disk.Value, vr2, diskFont, rowColor, dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
-	if stale {
-		hr := vr2
-		hr.Right -= int32(diskW) + scale(6, dpi)
-		drawText(b.hdc, "上次值", hr, f.Small, t.muted(), dtRight|dtVCenter|dtSingleLine|dtNoPrefix)
+	disk := chooseDiskRow(a.tr, func(v string) int32 { w, _ := measureText(b.hdc, v, f.Body); return w },
+		func(v string) int32 { w, _ := measureText(b.hdc, v, f.valueFont(v)); return w },
+		l.Disk.Right-l.Disk.Left, s(8), snap.Disk.ReadBPS, snap.Disk.WriteBPS, errText)
+	detail(l.Disk, disk.Label, disk.Value, diskInk, stale)
+	fillRect(b.hdc, rect{l.Disk.Left, l.Disk.Bottom, l.Disk.Right, l.Disk.Bottom + s(1)}, t.line())
+	latency := fmtLatency(a.tr, snap, cfg.RTTTargets)
+	if len(cfg.RTTTargets) == 0 {
+		latency = a.tr("未设置测点", "No target set")
 	}
-	line2 := rect{r2.Left, r2.Bottom, r2.Right, r2.Bottom + 1}
-	fillRect(b.hdc, line2, t.line())
+	detail(l.Latency, a.tr("延迟", "Latency"), latency, t.status(firstRTTState(snap, cfg.RTTTargets)), latencyOld)
 
-	// Primary action: AI 分析.
-	btn := shift(l.AnalyzeBtn)
-	btnFocus := a.popupFocusRect(paAnalyze, l)
-	fill := t.accent()
-	roundRect(b.hdc, btn, scale(8, dpi), fill, fill)
-	drawActionLabel(b.hdc, btn, a.tr("AI 分析", "AI diagnosis"), "sparkle", f.Body, t.accentText(), dpi)
-	if btnFocus {
-		inner := rect{btn.Left - 2, btn.Top - 2, btn.Right + 2, btn.Bottom + 2}
-		frame := rect{inner.Left - 1, inner.Top - 1, inner.Right, inner.Top}
-		fillRect(b.hdc, frame, t.text())
-		frame = rect{inner.Left - 1, inner.Bottom - 1, inner.Right, inner.Bottom}
-		fillRect(b.hdc, frame, t.text())
-		frame = rect{inner.Left - 1, inner.Top, inner.Left, inner.Bottom}
-		fillRect(b.hdc, frame, t.text())
-		frame = rect{inner.Right - 1, inner.Top, inner.Right, inner.Bottom}
-		fillRect(b.hdc, frame, t.text())
-	}
-
-	// Secondary action: 查看进程 with the chevron after the text.
-	link := shift(l.ProcessLink)
-	linkCaption := a.tr("查看进程", "View processes")
-	textW, _ := measureText(b.hdc, linkCaption, f.Body)
-	iconW := scale(12, dpi)
-	total := int32(textW) + scale(6, dpi) + iconW
-	cx := (link.Left + link.Right) / 2
-	l.LinkText = rect{cx - total/2, link.Top, cx - total/2 + int32(textW), link.Bottom}
-	l.LinkIcon = rect{l.LinkText.Right + scale(6, dpi), link.Top + (link.Bottom-link.Top-iconW)/2, l.LinkText.Right + scale(6, dpi) + iconW, link.Top + (link.Bottom-link.Top+iconW)/2}
-	linkFocus := a.popupFocusRect(paProcess, l)
-	color := t.muted()
-	if linkFocus {
-		color = t.text()
-	}
-	drawIcon(b.hdc, "chevron-right", color, l.LinkIcon)
-	drawText(b.hdc, linkCaption, l.LinkText, f.Body, color, dtLeft|dtVCenter|dtSingleLine|dtNoPrefix)
-	if linkFocus {
-		a.focusBorder(b, rect{cx - total/2 - scale(6, dpi), link.Top, cx + total/2 + scale(6, dpi), link.Bottom}, dpi)
-	}
-
-	// Hit rects are recomputed together with the frame they belong to.
-	a.panelHits = []popupHit{
-		{Rect: l.Gear, Action: paSettings},
-		{Rect: l.AnalyzeBtn, Action: paAnalyze},
-		{Rect: rect{cx - total/2 - scale(6, dpi), link.Top, cx + total/2 + scale(6, dpi), link.Bottom}, Action: paProcess},
+	roundRect(b.hdc, l.Analyze, s(14), t.accent(), t.accent())
+	drawActionLabel(b.hdc, l.Analyze, a.tr("本机诊断", "Local diagnosis"), "pulse", f.Body, t.accentText(), dpi)
+	roundRect(b.hdc, l.Processes, s(14), t.panel(), t.line())
+	drawActionLabel(b.hdc, l.Processes, a.tr("查看进程", "Processes"), "", f.Body, t.text(), dpi)
+	if a.panelFocus >= 0 && a.panelFocus < len(a.panelHits) {
+		a.focusBorder(b, a.panelHits[a.panelFocus].Rect, dpi)
 	}
 }
 
-func (a *App) popupFocusRect(act popupAction, l popupLayout) bool {
-	if a.panelFocus < 0 || a.panelFocus >= len(a.panelHits) {
-		return false
+// A fixed percentage scale makes the two histories comparable. During warm-up
+// the first samples enter from the right rather than stretching across the chart.
+func drawLoadHistory(hdc uintptr, area rect, history []float64, ink uint32, dpi uint32) {
+	const slots = 20
+	recent := history[max(0, len(history)-slots):]
+	if len(recent) < 2 {
+		return
 	}
-	return a.panelHits[a.panelFocus].Action == act
+	var points [slots]point
+	for i, value := range recent {
+		x := area.Right - 1 - int32(len(recent)-1-i)*(area.Right-area.Left-1)/(slots-1)
+		y := area.Bottom - int32(max(0, min(100, value))*float64(area.Bottom-area.Top)/100)
+		points[i] = point{x, y}
+	}
+	line(hdc, points[:len(recent)], ink, max(1, scale(2, dpi)))
 }
 
 func pointIn(x, y int32, r rect) bool {
