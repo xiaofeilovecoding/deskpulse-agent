@@ -58,7 +58,9 @@ func (a *App) createHistoryUI() error {
 		procSendMessageW.Call(ctl, wmSetFont, f.Small, 1)
 		return ctl
 	}
-	a.historyList = add("LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|wsTabStop|lbsNotify|lbsNoIntegralHeight, 20, 20, 588, 300, idHistoryList)
+	title := add("STATIC", a.tr("诊断历史", "Diagnosis history"), wsChild|wsVisible, 20, 16, 588, 26, -1)
+	procSendMessageW.Call(title, wmSetFont, f.TitleCJK, 1)
+	a.historyList = add("LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|wsTabStop|lbsNotify|lbsNoIntegralHeight, 20, 52, 588, 262, idHistoryList)
 	a.historyStatus = add("STATIC", "", wsChild|wsVisible, 20, 330, 588, 48, idHistoryStatus)
 	add("BUTTON", a.tr("导出 JSON", "Export JSON"), wsChild|wsVisible|wsTabStop|bsPush, 20, 382, 100, 30, idHistoryExport)
 	add("BUTTON", a.tr("刷新", "Refresh"), wsChild|wsVisible|wsTabStop|bsPush, 128, 382, 74, 30, idHistoryReload)
@@ -94,20 +96,30 @@ func (a *App) refreshHistory() {
 		setText(a.historyStatus, a.tr("读取历史失败：", "Could not read history: ")+err.Error())
 		return
 	}
+	selected := a.selectedHistoryIndex()
+	var selectedID string
+	if selected >= 0 {
+		selectedID = a.historyItems[selected].ID
+	}
 	a.historyItems = items
 	procSendMessageW.Call(a.historyList, lbResetContent, 0, 0)
-	for _, d := range items {
+	next := 0
+	for i, d := range items {
+		if d.ID == selectedID {
+			next = i
+		}
 		window := a.localizedWindow(d.WindowSeconds)
 		if d.WindowSeconds == 0 && d.WindowMinutes > 0 {
 			window = a.localizedWindow(d.WindowMinutes * 60)
 		}
-		line := fmt.Sprintf("%s  %s  %s  %s", fmtTime(d.CreatedAt), window, a.diagStatusText(d.Status), d.ID)
+		line := fmt.Sprintf("%s    %s    %s", fmtTime(d.CreatedAt), window, a.diagStatusText(d.Status))
 		addListString(a.historyList, line)
 	}
 	if len(items) == 0 {
 		setText(a.historyStatus, a.tr("暂无诊断历史。", "No diagnoses yet."))
 	} else {
-		setText(a.historyStatus, fmt.Sprintf(a.tr("共 %d 条最近诊断。导出只写本地 JSON，不包含 API Key。", "%d recent diagnoses. Export writes JSON to disk without credentials."), len(items)))
+		procSendMessageW.Call(a.historyList, lbSetCurSel, uintptr(next), 0)
+		a.showSelectedHistory()
 	}
 }
 
@@ -141,6 +153,10 @@ func (a *App) handleHistory(message uint32, wparam, lparam uintptr) (bool, uintp
 		switch id {
 		case idHistoryClose, 2: // IDCANCEL
 			showWindow(a.historyUI, swHide)
+		case idHistoryList:
+			if uint16(wparam>>16) == 1 { // LBN_SELCHANGE
+				a.showSelectedHistory()
+			}
 		case idHistoryReload:
 			a.refreshHistory()
 		case idHistoryExport:
@@ -158,10 +174,34 @@ func (a *App) handleHistory(message uint32, wparam, lparam uintptr) (bool, uintp
 	return false, 0
 }
 
-func (a *App) exportHistory() {
+func (a *App) selectedHistoryIndex() int {
 	sel, _, _ := procSendMessageW.Call(a.historyList, lbGetCurSel, 0, 0)
 	i := int(int32(sel))
 	if i < 0 || i >= len(a.historyItems) {
+		return -1
+	}
+	return i
+}
+
+func (a *App) showSelectedHistory() {
+	i := a.selectedHistoryIndex()
+	if i < 0 {
+		return
+	}
+	d := a.historyItems[i]
+	label := a.diagStatusText(d.Status)
+	if d.Model != "" {
+		label += "  ·  " + d.Model
+	}
+	if d.ErrorCode != "" {
+		label += "  ·  " + d.ErrorCode
+	}
+	setText(a.historyStatus, label+"\r\n"+a.tr("记录 ID", "Record ID")+"  "+d.ID)
+}
+
+func (a *App) exportHistory() {
+	i := a.selectedHistoryIndex()
+	if i < 0 {
 		setText(a.historyStatus, a.tr("请选择一条诊断记录。", "Select a diagnosis first."))
 		return
 	}
